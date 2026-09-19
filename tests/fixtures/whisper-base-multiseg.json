@@ -1,0 +1,54 @@
+{
+	"systeminfo": "WHISPER : VITISAI = 0 | COREML = 0 | OPENVINO = 0 | CPU : NEON = 1 | ARM_FMA = 1 | OPENMP = 1 | REPACK = 1 | ",
+	"model": {
+		"type": "base",
+		"multilingual": true,
+		"vocab": 51865,
+		"audio": {
+			"ctx": 1500,
+			"state": 512,
+			"head": 8,
+			"layer": 6
+		},
+		"text": {
+			"ctx": 448,
+			"state": 512,
+			"head": 8,
+			"layer": 6
+		},
+		"mels": 80,
+		"ftype": 1
+	},
+	"params": {
+		"model": "/w/ggml-base.bin",
+		"language": "auto",
+		"translate": false
+	},
+	"result": {
+		"language": "en"
+	},
+	"transcription": [
+		{
+			"timestamps": {
+				"from": "00:00:00,000",
+				"to": "00:00:30,000"
+			},
+			"offsets": {
+				"from": 0,
+				"to": 30000
+			},
+			"text": " The first sentence of this recording is about testing. And here is a second rather different sentence, spoken after a pause, so that the model is likely to split the transcription into more than one segment. The first sentence of this recording is about testing. And here is a second rather different sentence, spoken after a pause, so that the model is likely to split the transcription into more than one segment. The first sentence of this recording is about testing. And here is a second rather different sentence."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:30,000",
+				"to": "00:01:00,000"
+			},
+			"offsets": {
+				"from": 30000,
+				"to": 60000
+			},
+			"text": " spoken after a pause, so that the model is likely to split the transcription into more than one segment. The first sentence of this recording is about testing. And here is a second rather different sentence, spoken after a pause, so that the model is likely to split the transcription into more than one segment."
+		}
+	]
+}

@@ -1,0 +1,41 @@
+{
+    "tag": "yt-transcript",
+    "architecture": "linux/arm64",
+    "init": {
+        "entry_path": ["service", "entrypoint.sh"]
+    },
+    "api": [
+        {
+            "port": 8080,
+            "transport": "tcp",
+            "protocol": [
+                "http"
+            ]
+        }
+    ],
+    "envs": [
+        "YT_PORT",
+        "YT_MAX_DURATION_S",
+        "YT_WHISPER_THREADS",
+        "YT_LANGUAGE",
+        "YT_REQUEST_TIMEOUT_S"
+    ],
+    "network": [
+        {
+            "tags": [
+                "*"
+            ],
+            "prose": "Open egress, because YouTube's media is served from a CDN whose hostnames cannot be enumerated in advance: a video's audio track is fetched from a per-session host of the form rN---sn-XXXXXXXX.googlevideo.com, where the label is assigned per request, so no fixed list of hostnames covers what a download actually connects to. This is the same reason celaut-basics/bitcoin-node asks for open egress rather than declaring DNS seeds it would then have to work around, and it is declared plainly rather than dressed up as a narrower ask this service would then quietly fail to honour. Two nodo facts make the narrower declaration not merely imprecise but non-functional, both verified against this checkout rather than assumed. First, a hostname tag is resolved by the NODE (src/manager/networks.py resolve_domain) into A records, and the firewall opens exactly those addresses on TCP 80 and 443 -- it opens nothing on UDP 53, and src/virtualizers/microvm/network.py states outright that no port-53 rule is written and that nodo does not serve DNS. The guest's own resolver is therefore unreachable under a hostname tag, so a service that has to turn a name into an address cannot do it: it would be granted the addresses of hosts it can never look up. Second, resolve_network only ever applies the FIRST tag that resolves and then breaks, so a multi-hostname entry in the demo-service style grants one hostname's addresses and silently drops the rest. What this service does with that egress is bounded by the service itself and not by the node: the only program in this image that opens a socket is yt-dlp, the ffmpeg here is compiled with --disable-network and cannot open a URL at all, and the URL yt-dlp is given has already been checked against a fixed allow-list of five YouTube hosts (service/urls.py) before any request is made. An operator who wants that boundary enforced at the node instead of taken on trust has service_networks in config.yaml, and NODE-REQUIREMENTS.md says what happens to this service under each policy."
+        }
+    ],
+    "resources": {
+        "at_init": {
+            "mem_limit": 600000000,
+            "disk_space": 3000000000
+        },
+        "at_most": {
+            "mem_limit": 1500000000,
+            "disk_space": 4000000000
+        }
+    }
+}

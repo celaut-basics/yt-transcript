@@ -36,6 +36,13 @@ import urls
 # past this is not one, and reading it to find out is the thing to avoid.
 MAX_BODY_BYTES = 8192
 
+# Seconds a connection may stay silent: while the request is read, and between
+# requests on a kept-alive connection. Every connection holds a thread, so without
+# a bound a client that opens connections and sends nothing (or sends a
+# Content-Length and no body) holds threads for ever. It does not limit the time a
+# transcription takes: no read happens while the pipeline runs.
+IDLE_TIMEOUT_S = 30
+
 _slot = threading.BoundedSemaphore(1)
 
 
@@ -55,6 +62,11 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "yt-transcript"
     sys_version = ""
+    # StreamRequestHandler applies this to the socket. A read that times out ends
+    # the connection, not the process.
+    timeout = IDLE_TIMEOUT_S
+    # Whether the current request's body has been read. Reset by each do_* method.
+    _body_read = False
 
     # BaseHTTPRequestHandler's default writes to stderr with its own format and,
     # more to the point, logs the full request line -- which carries a
@@ -69,8 +81,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if status == HTTPStatus.SERVICE_UNAVAILABLE:
             self.send_header("Retry-After", "30")
+        # A body this handler did not read is still in the stream. On a kept-alive
+        # connection it would be parsed as the start of the next request, so the
+        # connection is closed instead. That is the case for every refusal made
+        # before the body is read (404, 413, a bad Content-Length) and for a GET
+        # that sends a body.
+        if not self._body_read and self._declares_a_body():
+            self.close_connection = True
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+    def _declares_a_body(self) -> bool:
+        if self.headers.get("Transfer-Encoding"):
+            return True
+        return (self.headers.get("Content-Length") or "0").strip() not in ("", "0")
 
     def _error(self, status: int, message: str, detail: str = "") -> None:
         payload = {"error": message}
@@ -79,6 +104,8 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(status, payload)
 
     def do_GET(self):  # noqa: N802 - name fixed by the base class
+        # Per request: one handler serves every request of a kept-alive connection.
+        self._body_read = False
         if self.path.split("?", 1)[0] == "/health":
             self._respond(HTTPStatus.OK, {
                 "status": "ok",
@@ -92,6 +119,7 @@ class Handler(BaseHTTPRequestHandler):
         self._error(HTTPStatus.NOT_FOUND, "no such endpoint", "GET /health")
 
     def do_POST(self):  # noqa: N802 - name fixed by the base class
+        self._body_read = False
         if self.path.split("?", 1)[0] != "/transcribe":
             self._error(HTTPStatus.NOT_FOUND, "no such endpoint", "POST /transcribe")
             return
@@ -113,7 +141,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             raw = self.rfile.read(length)
         except OSError:
+            # Includes the idle timeout. Nothing useful can be sent back.
+            self.close_connection = True
             return
+        if len(raw) < length:
+            # The client closed the connection before it sent the whole body.
+            self.close_connection = True
+            return
+        self._body_read = True
 
         try:
             document = json.loads(raw.decode("utf-8"))

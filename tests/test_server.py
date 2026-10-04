@@ -5,7 +5,9 @@ replaced, so these exercise routing, body handling, status codes and the
 one-at-a-time semaphore without downloading or transcribing anything.
 """
 
+import http.client
 import json
+import socket
 import threading
 import unittest
 import urllib.error
@@ -33,7 +35,11 @@ class ServerFixture(unittest.TestCase):
     def setUp(self):
         self.httpd = server.Server(("127.0.0.1", 0), server.Handler, a_config())
         self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        # A short poll interval only makes shutdown() return sooner between tests.
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.05},
+            daemon=True,
+        )
         self.thread.start()
         self.addCleanup(self._stop)
 
@@ -288,6 +294,96 @@ class TestConcurrency(ServerFixture):
             )
         self.assertEqual(status, 200)
         self.assertEqual(body["text"], "ok")
+
+
+class TestConnections(ServerFixture):
+    """What one TCP connection can and cannot do to the server."""
+
+    def _raw(self, data, timeout=5):
+        """Send bytes on a fresh connection and read until the server closes it."""
+        port = self.httpd.server_address[1]
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+            sock.sendall(data)
+            chunks = []
+            while True:
+                try:
+                    chunk = sock.recv(65536)
+                except socket.timeout:
+                    self.fail("the server kept the connection open")
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    def test_keep_alive_serves_several_requests(self):
+        conn = http.client.HTTPConnection(
+            "127.0.0.1", self.httpd.server_address[1], timeout=5
+        )
+        try:
+            for _ in range(3):
+                conn.request("GET", "/health")
+                response = conn.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+        finally:
+            conn.close()
+
+    def test_an_unread_body_is_not_parsed_as_the_next_request(self):
+        """A 404 sent before the body is read must close the connection.
+
+        Otherwise the body is read as the next request line, and a client can
+        smuggle a second request inside the first one's body.
+        """
+        smuggled = b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
+        request = (
+            b"POST /not-an-endpoint HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(smuggled)).encode() + b"\r\n\r\n"
+            + smuggled
+        )
+        reply = self._raw(request)
+        self.assertEqual(reply.count(b"HTTP/1.1 "), 1, reply)
+        self.assertIn(b" 404 ", reply)
+        self.assertIn(b"Connection: close", reply)
+
+    def test_an_oversized_body_closes_the_connection(self):
+        request = (
+            b"POST /transcribe HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Length: 999999\r\n\r\n"
+        )
+        reply = self._raw(request)
+        self.assertIn(b" 413 ", reply)
+        self.assertIn(b"Connection: close", reply)
+
+    def test_connections_have_an_idle_timeout(self):
+        """The base class default is None: a socket that waits for ever."""
+        self.assertIsNotNone(server.Handler.timeout)
+        self.assertLessEqual(server.Handler.timeout, 60)
+
+    def test_a_silent_client_does_not_hold_a_thread_for_ever(self):
+        """A Content-Length with no body: the read times out and the socket closes."""
+        with mock.patch.object(server.Handler, "timeout", 0.3), \
+                mock.patch.object(pipeline, "run") as run:
+            reply = self._raw(
+                b"POST /transcribe HTTP/1.1\r\nHost: x\r\n"
+                b"Content-Length: 100\r\n\r\n",
+                timeout=5,
+            )
+        self.assertEqual(reply, b"")
+        run.assert_not_called()
+
+    def test_a_short_body_is_not_parsed(self):
+        """The client closes its side before the declared length arrives."""
+        port = self.httpd.server_address[1]
+        with mock.patch.object(pipeline, "run") as run:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+                sock.sendall(
+                    b"POST /transcribe HTTP/1.1\r\nHost: x\r\n"
+                    b"Content-Length: 100\r\n\r\n{\"url\": \"https://youtu.be/x\"}"
+                )
+                sock.shutdown(socket.SHUT_WR)
+                self.assertEqual(sock.recv(65536), b"")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

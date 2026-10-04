@@ -132,7 +132,13 @@ def probe(url: str, cfg: config.Config, deadline: Deadline) -> Dict[str, Any]:
         config.YTDLP_BIN,
         "--skip-download",
         "--dump-single-json",
-        "--no-playlist",          # a playlist URL is one video, not forty
+        "--no-playlist",          # a watch URL inside a playlist is one video
+        # A URL that is only a playlist or a channel (`/playlist?list=`, `/@name`) is
+        # still a playlist under --no-playlist. Without this, the probe extracts
+        # every entry of it, which for a channel is thousands of requests, before
+        # the playlist is refused below.
+        "--flat-playlist",
+        "--ignore-config",        # no config file can add options to this argv
         "--no-warnings",
         "--no-progress",
         # `--no-call-home` is deliberately absent: it is deprecated as of the pinned
@@ -159,6 +165,13 @@ def probe(url: str, cfg: config.Config, deadline: Deadline) -> Dict[str, Any]:
         raise PipelineError("yt-dlp returned metadata that is not JSON", status=502) from None
     if not isinstance(info, dict):
         raise PipelineError("yt-dlp returned metadata that is not an object", status=502)
+
+    if info.get("_type") in ("playlist", "multi_video"):
+        raise PipelineError(
+            "the URL is a playlist or a channel, not one video. Send the URL of "
+            "one video",
+            status=422,
+        )
 
     # A live stream has no duration and no end; it is refused rather than started.
     if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming"):
@@ -207,6 +220,7 @@ def download_audio(url: str, workdir: str, deadline: Deadline) -> str:
         config.YTDLP_BIN,
         "-f", "bestaudio/best",
         "--no-playlist",
+        "--ignore-config",
         "--no-warnings",
         "--no-progress",
         "--no-cookies",

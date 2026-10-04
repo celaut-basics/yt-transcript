@@ -99,6 +99,15 @@ class TestProbeRefusals(unittest.TestCase):
                     self._probe(info)
                 self.assertEqual(caught.exception.status, 422)
 
+    def test_a_playlist_or_channel_is_refused(self):
+        """One request is one video. A playlist has no single duration to bound."""
+        for kind in ("playlist", "multi_video"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(pipeline.PipelineError) as caught:
+                    self._probe(json.dumps({"_type": kind, "id": "PL1", "entries": []}))
+                self.assertEqual(caught.exception.status, 422)
+                self.assertIn("playlist", str(caught.exception))
+
     def test_a_video_with_no_duration_is_refused(self):
         with self.assertRaises(pipeline.PipelineError) as caught:
             self._probe(metadata(duration=None))
@@ -166,6 +175,26 @@ class TestArgv(unittest.TestCase):
         ) as run:
             pipeline.probe("https://youtu.be/x", a_config(), pipeline.Deadline(60))
         self.assertIn("--no-playlist", self._argv_of(run.call_args))
+
+    def test_a_playlist_url_is_not_expanded_by_the_probe(self):
+        """A channel URL must not cost one extraction per video before it is refused."""
+        with mock.patch.object(
+            pipeline, "_run", return_value=(0, metadata(), "")
+        ) as run:
+            pipeline.probe("https://youtu.be/x", a_config(), pipeline.Deadline(60))
+        self.assertIn("--flat-playlist", self._argv_of(run.call_args))
+
+    def test_no_config_file_is_read(self):
+        """A yt-dlp config file could add options this service did not choose."""
+        with mock.patch.object(
+            pipeline, "_run", return_value=(0, metadata(), "")
+        ) as run:
+            pipeline.probe("https://youtu.be/x", a_config(), pipeline.Deadline(60))
+        self.assertIn("--ignore-config", self._argv_of(run.call_args))
+        with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
+                mock.patch.object(os, "listdir", return_value=["audio.webm"]):
+            pipeline.download_audio("https://youtu.be/x", "/w", pipeline.Deadline(60))
+        self.assertIn("--ignore-config", self._argv_of(run.call_args))
 
     def test_download_bounds_the_bytes_as_well_as_the_time(self):
         with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \

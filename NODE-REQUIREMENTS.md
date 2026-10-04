@@ -1,175 +1,133 @@
-# What this service needs from the node, and three things the spec cannot express
+# What this service needs from the node
 
-`yt-transcript` asks for very little: one HTTP slot, egress, and ordinary CPU. It
-needs no capability, no device, no share, no dependency service. What follows is the
-short list, and then the findings that are really about nodo rather than about this
-service — written down because they were found by building against this checkout, and
-because two of them would silently produce a service that looks configured and does
-not work.
+`yt-transcript` asks for little: one HTTP slot, open egress, two vCPUs and some
+disk. It needs no capability, no device, no share and no dependency service. This
+file lists what it needs, and then the facts about nodo that decided its `network`
+declaration. Each fact was checked against the nodo source (`dev`, October 2026).
 
 ## From the node
 
 | | |
 |---|---|
-| **egress** | `["*"]`. Why it cannot be narrower is below and in the README. |
-| **an API slot** | TCP 8080, `protocol: ["http"]`. Reached however the operator reaches any service — a published port, or [`nodo tunnel`](https://github.com/celaut-project/nodo/blob/master/docs/TUNNELING.md). |
-| **CPU** | Whatever the operator grants. The service reads its own CPU count and sizes whisper's thread pool to it, so a `cpu_quota` is honoured rather than oversubscribed. |
+| **egress** | `["*"]`. The section below and the README say why it cannot be narrower. |
+| **DNS** | None from the node. The service names its own resolvers (see [2](#2-a-guest-has-no-resolver-at-all)). |
+| **an API slot** | TCP 8080, `protocol: ["http"]`. Reach it at the address that `nodo instances` shows, or through [`nodo tunnel`](https://github.com/celaut-project/nodo/blob/dev/docs/TUNNELING.md). |
+| **CPU** | Two vCPUs (`cpu_quota` 200000 / `cpu_period` 100000). nodo boots `ceil(cpu_quota / cpu_period)` vCPUs, and one vCPU when no quota is set. whisper uses one thread per vCPU. |
 | **memory** | 600 MB at init, 1.5 GB at most. Measured peak: 297 MiB. |
-| **disk** | 3 GB at init, 4 GB at most. The filesystem is 290 MB; the rest is one request's scratch. |
+| **disk** | 3 GB at init, 4 GB at most. The filesystem is 290 MB. The rest is the scratch space of one request, on the writable rootfs. |
 
 ## From the host
 
-**Nothing.** No kernel config, no device node, no module, no native application. This
-is deliberate and is the difference between this service and
-[`remote-browser`](https://github.com/celaut-basics/remote-browser)'s `stream/`, which
-needs `CONFIG_INPUT_UINPUT`. Everything here is userspace arithmetic on a buffer.
+**Nothing.** No kernel configuration, no device node, no module and no native
+application. Everything here is userspace work on a buffer.
 
 **Not a GPU.** `celaut.Sysresources` has `mem_limit`, `disk_space`, `cpu_period`,
-`cpu_quota` and `blkio_weight` and no accelerator field — there is no way to declare
-that an instance needs one, so a service that needed one could not be scheduled
-anywhere on this network. whisper is invoked with `-ng` and the image contains no GPU
-runtime. `remote-browser` reached the same conclusion for the same reason.
+`cpu_quota`, `blkio_weight` and `benchmark`, and no accelerator field. A service
+cannot declare that it needs a GPU, so whisper runs with `-ng` and the image holds no
+GPU runtime. [`remote-browser`](https://github.com/celaut-basics/remote-browser) has
+the same result for the same reason.
+
+**Why not `read_only_filesystem`.** On a read-only rootfs, `/tmp` is a tmpfs, so the
+scratch space of a request is RAM. One hour of audio needs about 145 MB of scratch,
+and `--max-filesize` allows 512 MB for the download. On the default writable rootfs
+the scratch space is disk, which this service declares.
 
 ---
 
-## 1. A hostname tag grants addresses the guest cannot resolve
+## 1. A hostname tag grants addresses, not name resolution
 
-This is the finding that decided this service's `network` declaration, and it is not
-specific to YouTube — it applies to **any** service that reaches a named host.
+This fact decided the `network` declaration. It applies to **every** service that
+reaches a named host. nodo now documents it in `docs/NETWORKS.md` → *Hostname tags*
+and `docs/PACKING.md` → `network` (nodo#389).
 
-Declaring `tags: ["www.youtube.com"]` looks like the right, narrow thing to do. What
-the node actually does with it:
+`tags: ["www.youtube.com"]` looks like the narrow, correct declaration. This is what
+the node does with it:
 
-- `resolve_network` → `resolve_domain` (`src/manager/networks.py`) resolves the tag
-  **on the node**, to IPv4 A records, and builds `Instance.Uri` entries for ports
-  **80 and 443**;
-- the firewall writes one allow per address (`allow_connection_to_instance`), on the
-  **forward** hook.
+- `resolve_network` → `resolve_domain` (`src/manager/networks.py`) resolves the name
+  **on the node** to IPv4 addresses, on ports 80 and 443 (or on the port that the
+  entry's `formal` gives as `port=<n>`).
+- The firewall writes one allow per address.
+- No rule opens port 53, and nodo serves no DNS
+  (`src/virtualizers/microvm/network.py`).
 
-And then, from `src/virtualizers/microvm/network.py`:
+yt-dlp gets a URL and calls `getaddrinfo()`. Under a hostname tag that call fails
+before yt-dlp uses the allow. The declaration looks correct, and the service makes no
+request at all. Also, YouTube sends media from hosts such as
+`rN---sn-XXXXXXXX.googlevideo.com`, which change per request. No list of tags can
+name them.
 
-> There is no rule for port 53: nodo does not serve DNS, and a guest that wants name
-> resolution gets it from a service […] or inside its own container.
+A glob such as `*.googlevideo.com` is not a solution. The packer refuses it at pack
+time (nodo#391). Thus the service declares `"*"`, the only declaration that works for
+a program that looks up names.
 
-So the guest is granted **addresses**, over TCP, for hosts it has no way to **look
-up** — `block_all` covers `("tcp", "udp")`, and nothing opens 53. Any program that
-calls `getaddrinfo()` fails before it ever uses the allow it was given. The
-declaration reads as a tight, correct confinement and produces a service that cannot
-make a single request.
+## 2. A guest has no resolver at all
 
-The module comment explains the reasoning, and it is sound: name resolution is not
-nodo's business, the node delivers the *data* in `ConfigurationFile.network_resolution`,
-and a service should read it from `__config__` rather than have a glibc convention
-injected into a filesystem the node does not own. `ergo-node` works exactly that way —
-it reads peers out of `__config__` and hands them to a program that takes addresses.
+`"*"` opens all egress (`allow_all_egress_rule`, `src/utils/firewall/policy.py`), UDP
+53 included. But open egress does not give the guest a resolver:
 
-**The gap is for programs that take names rather than addresses.** `yt-dlp` is handed
-a URL; `curl` is handed a URL; a TLS client needs the name for SNI and certificate
-validation regardless. For those, the resolution in `__config__` is not usable
-without a DNS server inside the guest to serve it — which is the "a service reads
-`network_resolution` and serves DNS from it" design the comment points at, and which
-does not exist yet as something a service can depend on.
+- nodo writes no `/etc/resolv.conf` into a guest. The note in
+  `src/virtualizers/microvm/network.py` says that name resolution is the job of the
+  service.
+- The image has the `/etc/resolv.conf` that BuildKit exported, which is empty or
+  absent. glibc then asks `127.0.0.1:53`, where nothing listens.
 
-Worth knowing: `resolve_domain` produces **ports 80 and 443 only**, hardcoded, with a
-`TODO` noting it should come from the protocol stack. A hostname tag cannot express any
-other port.
+Before this was found, the service passed every test under Docker (Docker supplies a
+resolver) and would have failed every request under nodo.
 
-## 2. Only the first tag in a `network` entry is ever used
+**What the service does.** `service/entrypoint.sh` runs `service/resolver.py` as
+root before it drops privileges. When `/__config__` exists, the node started the
+guest, and the step writes three public resolvers (`9.9.9.9`, `1.1.1.1`,
+`8.8.8.8`). `YT_DNS_SERVERS` replaces them, for example with a resolver on the LAN of
+the operator. Without `/__config__` and without `YT_DNS_SERVERS`, the step changes
+nothing, so the Docker resolver stays.
 
-`resolve_network` walks `network.tags` and stops at the first that resolves:
+**What would remove the need.** A DNS service that reads `network_resolution` and
+answers for its siblings, which the `network.py` note proposes. It does not exist
+yet. When it does, a narrower declaration can become possible.
 
-```python
-uris = resolve_domain(tag)
-if uris:
-    break
-```
+## 3. Facts from the first version of this file that changed in nodo
 
-So an entry in the [`demo-service`](https://github.com/celaut-basics/demo-service)
-style —
+The first version of this file reported two more problems. Current nodo has resolved
+both, so this service no longer works around them:
 
-```json
-{"tags": ["google.com", "www.google.com"], "prose": "..."}
-```
-
-— grants **`google.com`'s addresses only**. `www.google.com` is never resolved, and on
-a domain where those differ (they often do, and for YouTube's five hosts they
-certainly do) the guest is silently missing four of the five destinations it declared.
-
-`demo-service` itself is shaped this way, and so is `ping`. They work because the
-first tag is the one that matters to them.
-
-No error, no warning, nothing in the log to distinguish "granted one of five" from
-"granted five". The firewall logs one line per *entry*, not per tag.
-
-`docs/NETWORKS.md` says something adjacent and stronger — "Every tag must pass […] A
-network is not one destination, it is as many as it names" — but that is describing the
-**operator policy** check in `service_networks`, which walks every tag. The *resolver*
-does not. Two parts of the same file mean different things by "the tags", which is
-worth reconciling.
-
-**If this is intended**, `docs/PACKING.md`'s `network` section should say that extra
-tags in one entry are alternates rather than a set, and the examples should stop
-showing two hostnames in one entry. **If it is not**, the fix is to accumulate rather
-than break.
-
-## 3. A wildcard hostname is not unsupported — it aborts the launch
-
-There is no syntax for `*.googlevideo.com`, which is the shape a CDN needs. That much
-is a missing feature. The failure mode is the part to know:
-
-`resolve_domain` raises `ValueError("Cannot resolve domain: …")` on a name that does
-not resolve, and `*.googlevideo.com` does not — a wildcard is not a name a resolver
-ever answers. Verified by running the resolver's own logic against that tag.
-
-Nothing between `resolve_domain` and `build_network_resolution` catches it, so it
-leaves the resolution path. What it reaches is the broad
-`except Exception` wrapping `ch/execute.py`'s launch, which logs
-`execute failed: ValueError: Cannot resolve domain: *.googlevideo.com`, tears down the
-VM's firewall rules, and fails the launch.
-
-So a service that tries the natural thing does not get a warning and a dropped
-network — it gets a failed launch, reported as a DNS error naming a hostname, rather
-than as "this declaration is not something the resolver supports". The distance
-between the message and the cause is the cost: the declaration is in `service.json`
-and the error is about resolving a name nobody meant literally.
-
-(A tag with no dot, or with an uppercase letter, is *skipped* silently by the
-`not tag.islower() or '.' not in tag` guard instead, so it never reaches
-`resolve_domain`. `*` takes that path, which is why open egress works: it resolves to
-no URIs, and the firewall matches the literal `"*"` separately in
-`configure_guest_firewall_policy`.)
+- **Tags of one entry are synonyms.** `resolve_network` uses the first tag that
+  resolves. nodo now documents this as the design: one entry is one destination
+  under several names, and two destinations are two entries.
+- **A glob no longer aborts a launch.** The packer refuses `*.example.com` at pack
+  time (nodo#391). At launch, a name that does not resolve gives no peers for that
+  tag and is written to the log. The launch continues.
 
 ---
 
-## What this service does instead
+## What the service does instead of a narrow declaration
 
-Declares `["*"]`, says why in the `prose`, and does the narrowing **inside** the
-service, where it can actually be enforced:
+It declares `["*"]`, gives the reason in the `prose`, and narrows the egress
+**inside** the service, where it can enforce the limit:
 
-- exactly one program in the image opens a socket (`yt-dlp`);
-- `ffmpeg` is built `--disable-network` — its protocol list is `file`, asserted by the
-  image tests — so the component that parses untrusted bytes cannot fetch any;
-- the URL is checked against **five exact hostnames** after parsing, on
-  `urlsplit().hostname`, before any request (`service/urls.py`, and the bulk of
-  `tests/test_urls.py`);
-- no shell, anywhere; every subprocess takes an argv list and a replaced environment,
-  so an inherited `http_proxy` cannot redirect a fetch;
-- no cookies and no credentials exist to leak.
+- yt-dlp is the only program in the image that opens a socket.
+- `ffmpeg` is built `--disable-network`. Its protocol list is `file` only, and the
+  image tests check this.
+- The URL must name one of **five exact hostnames**, compared after parsing, before
+  any request (`service/urls.py`, and most of `tests/test_urls.py`).
+- No shell runs anywhere. Every subprocess gets an argv list and a replaced
+  environment, so an inherited `http_proxy` cannot send a fetch somewhere else.
+  `--ignore-config` stops a yt-dlp config file from adding options.
+- No cookie and no credential exists in the image.
 
-An operator who wants the node to enforce it rather than trust it has
-`service_networks` in `config.yaml`. Under a **whitelist**, this service needs `"*"`
-explicitly listed — `docs/NETWORKS.md` is clear that a non-empty whitelist must cover
-every tag, and `*` is matched as a tag here, not as a glob. Under
-`blacklist: ["*"]` — "nothing beyond this node" — it is refused, correctly: a service
-that cannot reach YouTube has nothing to offer, and being refused at launch with a
-message naming the rule is the right outcome.
+An operator who wants the node to enforce a limit uses `service_networks` in
+`config.yaml`:
 
-## One thing worth adding, if `grant_only` ever lands
+- **Whitelist.** A non-empty whitelist must match every tag (`docs/NETWORKS.md`).
+  The policy matches each pattern with `fnmatch` against the tag `*`. A pattern such
+  as `*youtube.com` does not match it, so the whitelist must hold `"*"`, which
+  matches every tag.
+- **`blacklist: ["*"]`** ("nothing beyond this node"). The node refuses this service
+  at launch, with a message that names the rule. That is correct: a service that
+  cannot reach YouTube has nothing to give.
 
-`remote-browser`'s `NODE-REQUIREMENTS.md` asks for a `grant_only` flag, because
-declaring a network both **grants** it to children and **takes** it for the declaring
-VM. This service has no children, so it is unaffected — but the inverse of its problem
-is what a narrower declaration here would need. If a DNS-serving sidecar ever becomes
-the ecosystem's answer to finding #1, a service like this one would want to declare
-*"my child may reach `*`, I may not"*, which is the same missing expressiveness seen
-from the other side.
+## Children
+
+This service starts no child services, so the ancestor chain
+(`filter_networks_with_ancestors`) does not apply to it. If a parent service starts
+`yt-transcript` as a dependency, that parent must also declare `["*"]`. Otherwise
+this service boots with no egress, and every request fails with a 502 from yt-dlp.

@@ -71,7 +71,7 @@ whichever tool failed:
 | `400` | the URL is not on the host allow-list, or the body is not `{"url": "..."}` |
 | `404` | not `/transcribe` or `/health` |
 | `413` | the body is over 8 kB, **or** the video is longer than `YT_MAX_DURATION_S` |
-| `422` | a live/upcoming stream, or a video reporting no duration — neither can be bounded |
+| `422` | a playlist or channel URL (send one video), a live/upcoming stream, or a video with no duration — none of them can be bounded |
 | `500` | transcription failed, or something unexpected did |
 | `502` | yt-dlp or ffmpeg failed. `detail` says what they said |
 | `503` | already transcribing. One at a time; `Retry-After: 30` |
@@ -94,68 +94,90 @@ a node as an instance that had died.
 |---|---|---|
 | `YT_PORT` | `8080` | The port the HTTP slot listens on. Must match `api[0].port` in `.service/service.json`. |
 | `YT_MAX_DURATION_S` | `3600` | Longest video accepted, checked **before** downloading. |
-| `YT_WHISPER_THREADS` | *(the instance's CPUs)* | whisper's `-t`. `0` means "as many as this instance was given"; whisper's own default of 4 would oversubscribe a 2-vCPU instance and idle a large one. |
+| `YT_WHISPER_THREADS` | *(the instance's CPUs)* | whisper's `-t`. `0` means "as many CPUs as this process may use" (`sched_getaffinity`). Under nodo that is the 2 vCPUs that `service.json` declares. whisper's own default of 4 would oversubscribe that. |
 | `YT_LANGUAGE` | `auto` | Language code (`en`, `es`, `zh-tw`) or `auto` to detect. |
 | `YT_REQUEST_TIMEOUT_S` | `4 × YT_MAX_DURATION_S` | Whole-request budget, shared across probe, download, decode and transcribe. |
+| `YT_DNS_SERVERS` | *(see below)* | One to three resolver IP addresses, separated by spaces or commas. Under a node the default is `9.9.9.9 1.1.1.1 8.8.8.8`; outside a node the default is to keep the resolver of the runtime. |
 
-Every one is refused loudly rather than clamped: `YT_MAX_DURATION_S=abc` stops the
+Pass them at launch with `nodo execute -e <name> <value>`. nodo delivers each
+declared name as a real environment variable of the entrypoint, and also in
+`/__config__`. Every one is refused loudly rather than clamped: `YT_MAX_DURATION_S=abc` stops the
 service at start instead of silently becoming 3600. A limit that reverts to its
 default when mistyped is not the limit the spec declares — and this one is what stands
 between a clip and an eight-hour livestream on a 4 GB disk.
 
 ## The network it asks for
 
-**`["*"]` — open egress.** Stated plainly rather than dressed up as something
-narrower, and the reason is worth reading because two of the three parts are facts
-about nodo rather than about YouTube.
+**`["*"]` — open egress.** A narrower declaration does not work for this service.
+[`NODE-REQUIREMENTS.md`](NODE-REQUIREMENTS.md) gives the details, with the nodo source
+for each fact.
 
-**YouTube's media hosts cannot be enumerated.** A video's audio comes from a
-per-session host of the form `rN---sn-XXXXXXXX.googlevideo.com`, where the label is
-assigned per request. No fixed list covers it. This is the same position
-[`celaut-basics/bitcoin-node`](https://github.com/celaut-basics/bitcoin-node) is in
-with DNS seeds, and it asks for `["*"]` for the same reason.
+**YouTube's media hosts cannot be listed.** The audio comes from a host of the form
+`rN---sn-XXXXXXXX.googlevideo.com`, and the label changes per request. A glob such as
+`*.googlevideo.com` is not a solution: the packer refuses it (nodo#391).
 
-**A hostname tag would not work even if the list existed**, and this is the part that
-surprised me. Two findings from this checkout of nodo, both verified rather than
-assumed:
+**A hostname tag gives addresses, not name resolution.** nodo resolves the tag on the
+node and opens those addresses on TCP 80 and 443. It opens no port 53 and serves no
+DNS. yt-dlp gets a URL and must look up the name itself, so under a hostname tag it
+fails before it sends a request. nodo documents this in `docs/NETWORKS.md` →
+*Hostname tags* (nodo#389), and tells such a service to declare `"*"` and narrow
+inside the image.
 
-1. **A hostname tag opens TCP 80 and 443 to resolved A records — and nothing on UDP
-   53.** The node resolves the tag itself (`resolve_domain`, `src/manager/networks.py`)
-   and writes firewall allows for those addresses. `src/virtualizers/microvm/network.py`
-   states outright that no port-53 rule is written and that nodo does not serve DNS.
-   So a guest under a hostname tag is granted addresses for hosts **it cannot look
-   up** — and every program here resolves names for itself.
-2. **Only the first tag that resolves is used.** `resolve_network` walks
-   `network.tags` and `break`s at the first that resolves. A demo-service-style entry
-   listing five YouTube hosts would grant the first one's addresses and silently drop
-   the other four.
+**Under a node, a guest has no resolver.** nodo writes no `/etc/resolv.conf`, and the
+image has no usable one. So the entrypoint writes one before it drops privileges
+(`service/resolver.py`): public resolvers by default, or the addresses in
+`YT_DNS_SERVERS`. Outside a node (Docker) it keeps the resolver of the runtime.
 
-And a wildcard tag is not merely unsupported but fatal: `resolve_domain` raises
-`ValueError` on `*.googlevideo.com`, which propagates out of `build_network_resolution`
-and aborts the launch. There is no wildcard-hostname syntax to use. Both of these are
-in [`NODE-REQUIREMENTS.md`](NODE-REQUIREMENTS.md) in the form Josemi would want them.
+**The service limits the egress, not the node:**
 
-**What bounds the egress is the service, not the node.** Since the declaration cannot
-be narrow, the narrowing is done where it can be:
+- yt-dlp is the only program in this image that opens a socket.
+- `ffmpeg` is compiled `--disable-network`, and its protocol list is `file` only. It
+  cannot open a URL, and the image tests check this.
+- The URL that reaches yt-dlp must name one of **five exact hostnames**
+  (`service/urls.py`). The check uses `urlsplit().hostname`, after parsing.
+- No shell runs. yt-dlp reads no config file (`--ignore-config`). No cookie and no
+  credential exists to leak.
 
-- the only program in this image that opens a socket is **yt-dlp**;
-- `ffmpeg` is compiled `--disable-network` and its protocol list is literally `file` —
-  it cannot open a URL at all, which the image tests assert;
-- the URL reaching yt-dlp has already been checked against **five exact hostnames**
-  (`service/urls.py`), after parsing, against `urlsplit().hostname`;
-- nothing ever reaches a shell, and no cookie or credential exists to leak.
+An operator who wants the node to enforce a limit uses `service_networks` in
+`config.yaml`. `NODE-REQUIREMENTS.md` gives the result under each policy.
 
-An operator who wants that boundary enforced at the node instead of taken on trust has
-`service_networks` in `config.yaml`; `NODE-REQUIREMENTS.md` says what happens under
-each policy.
+## Packing and running it on a node
 
-## Building it
+These are the commands of the current nodo CLI (`docs/USAGE.md`,
+`docs/skill/SKILL.md`). Do not pack only to test a code change: a pack can take an
+hour. Use the Docker loop below for that.
 
 ```sh
-nodo pack .        # produces the service and prints its id (content hash)
+nodo pack /path/to/yt-transcript        # prints the service id (content hash)
+nodo pack /path/to/yt-transcript --local --detach --json   # local BuildKit, in the background
+nodo packs                              # the state of the packs
 ```
 
-Locally, without a node:
+`nodo pack` reads `.service/` (`Dockerfile`, `service.json`, `pack_config.json`).
+The packer builds for the `architecture` in `service.json`, `linux/arm64`, and it
+must match the architecture of the host that packs. The `include` list packs only
+`service/`, and the packer rewrites `COPY ./service` to `COPY service/service`.
+
+```sh
+nodo inspect yt-transcript              # the declared envs: only these can be passed with -e
+nodo estimate yt-transcript             # feasibility and cost before a launch
+nodo execute -e YT_MAX_DURATION_S 1800 -e YT_LANGUAGE en yt-transcript
+nodo instances                          # the instance id and the API address
+curl -s -X POST http://<api address>/transcribe \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://www.youtube.com/watch?v=ps3kWOQRQnY"}'
+nodo tunnel <instance id> 8080          # to reach the slot from another host
+nodo observe <instance id>              # CPU, memory and the network flows
+sudo nodo kill <instance id>
+```
+
+The address that `nodo instances` shows is reachable from the node host only. Use
+`nodo tunnel` to reach it from somewhere else.
+
+`nodo ggconf` is not useful here. This service does not call the gateway and has no
+dependencies, so `__config__` and `.dependencies` give it nothing.
+
+### Locally, without a node
 
 ```sh
 docker buildx build --platform linux/arm64 -f .service/Dockerfile -t yt-transcript:test --load .
@@ -164,6 +186,9 @@ docker buildx build --platform linux/arm64 -f .service/Dockerfile -t yt-transcri
 # or CMD, because nodo reads it from `init.entry_path` in service.json instead.
 docker run -d -p 8080:8080 --entrypoint /service/entrypoint.sh yt-transcript:test
 ```
+
+The Dockerfile uses only `./`-prefixed `COPY` sources, so the same file builds from
+the repository root here and from the packer's `.service/` context.
 
 **Everything is pinned**, by digest or SHA-256, with no `latest` anywhere:
 
@@ -186,15 +211,18 @@ a security update, until this file is edited — the same trade `ergo-node` and
 
 ### Architecture
 
-`linux/arm64`, matching `ergo-node` and `demo-service` (Josemi's nodo runs on ARM —
-`docs/FEDORA_ARM.md`). The Dockerfile takes `TARGETARCH` from BuildKit, and ffmpeg,
-whisper.cpp and the model are architecture-independent inputs — the two compiled from
-source build for whatever platform is requested, and the model is data. **Building for
-amd64 is two lines**: `architecture` in `.service/service.json`, and the yt-dlp
-checksum, since that one artifact is fetched rather than built. (The yt-dlp artifact
-pinned here is the *zipapp*, which is Python and portable, so in practice even that
-may not need to change — but the checksum belongs to a specific file and this README
-will not claim a build it has not run.)
+`linux/arm64`, the same as `ergo-node`, `bitcoin-node` and `remote-browser`. The
+runtime stage does not depend on the architecture: the Debian digest is a multi-arch
+index, the package versions are the same on arm64 and amd64, the yt-dlp zipapp is
+Python, and the model is data. ffmpeg and whisper.cpp compile for the platform that
+BuildKit builds.
+
+**For amd64, change `architecture` in `.service/service.json`, and look at the
+whisper stage.** `GGML_NATIVE=OFF` keeps the binary portable. On arm64 the baseline
+is armv8-a. On x86-64, with no other flag, ggml then builds without AVX, which makes
+whisper several times slower. An amd64 build needs `-DGGML_AVX=ON -DGGML_AVX2=ON
+-DGGML_FMA=ON -DGGML_F16C=ON` (the hosts must then have AVX2). Nobody has built or
+measured it, so this repository does not ship an amd64 tree.
 
 ### What it costs to run
 
@@ -234,8 +262,8 @@ Dockerfile plus the resources in `service.json`, and costs ~2.5x the CPU time.
 ## Tests
 
 ```sh
-sh tests/run.sh                                  # 114 offline tests, ~11 s
-sh tests/test_image.sh                           # 24 against a built image
+sh tests/run.sh                                  # 157 offline tests, ~2 s
+sh tests/test_image.sh                           # checks against a built image
 YT_TRANSCRIPT_LIVE=1 sh tests/test_image.sh      # + one real transcription
 ```
 
@@ -269,10 +297,32 @@ the request's temp directory is removed on success **and** on failure.
 that a refused URL never reaches the pipeline, that `/health` answers while a
 transcription holds the slot, and that the slot is released after a failure — without
 which one failed request would wedge the instance forever.
+It also checks one connection at a time: that a body the server did not read closes
+the connection (otherwise a client can hide a second request in it), and that a
+silent client is dropped after the idle timeout.
+
+**The resolver step** (`test_resolver.py`): public resolvers under a node, no change
+outside one, `YT_DNS_SERVERS` everywhere, and a bad value that stops the start.
+
+**The pack tree** (`test_layout.py`), read the way `nodo pack` reads it: the
+entrypoint exists and is executable, the declared envs are the envs the code reads,
+the API port is the default port, the CPU quota gives two vCPUs, and the Dockerfile
+has `./` COPY sources and no `CMD`, `ENTRYPOINT`, `EXPOSE` or `ENV`.
 
 **The image** (`test_image.sh`): that every binary runs, that ffmpeg's protocol list
 is `file` alone, that the model matches its pinned digest, that PID 1 is uid 10001,
 and that the allow-list holds over real HTTP.
+
+### Found in review against the current nodo
+
+Two faults only show under a node, so the Docker runs above could not find them:
+
+- **No DNS in the guest.** nodo writes no `/etc/resolv.conf`, and the exported image
+  has no usable one. Every yt-dlp lookup would fail, so every request would return
+  502. Fixed by `service/resolver.py`.
+- **One vCPU, not two.** nodo boots `ceil(cpu_quota / cpu_period)` vCPUs, and one when
+  `service.json` sets no quota. The code and the timeout assumed two. Fixed in
+  `resources`.
 
 ### Three bugs the tests found
 
@@ -311,12 +361,12 @@ On this machine (Apple Silicon, `linux/arm64` under Docker):
 - **A packer-shaped build works.** nodo's `COPY`-rewrite was applied and the image
   rebuilt from a simulated `.service/` context; it produced a working service.
 
-What is **not** verified: **this has never been launched under a real nodo.**
-`nodo pack .` was attempted and could not run here — the local checkout's `config.yaml`
-fails validation with removed keys, and packing wants BuildKit on Linux. So the
-`service.json` is written to PACKING.md and read against the packer's own
-`zip_with_dockerfile.py`, but no service id has been produced from it, and nothing has
-been through `resolve_network` or the firewall for real. Also unverified: any
+What is **not** verified: **this has never been launched under a real nodo.** No
+service id has been produced from this tree, and nothing has been through
+`resolve_network` or the firewall for real. The `service.json`, the pack tree and the
+DNS step were checked against the nodo `dev` source (`docs/PACKING.md`,
+`src/packers/`, `bash/build_ch_initramfs.sh`, `src/virtualizers/microvm/`), and
+`tests/test_layout.py` checks the packer rules, but static reading is not a launch. Also unverified: any
 architecture other than arm64, any model other than `base`, and long videos — the
 longest transcribed was 55 seconds.
 
@@ -325,7 +375,7 @@ longest transcribed was 55 seconds.
 - **Cookies, credentials, or sign-in.** `--no-cookies` and `--no-cookies-from-browser`
   are passed explicitly, and the tests assert no cookie flag is ever offered. This
   service cannot fetch anything that needs an account, by construction.
-- **A GPU.** `celaut.Sysresources` is `mem_limit`, `disk_space`, `cpu_period`,
+- **A GPU.** `celaut.Sysresources` is `mem_limit`, `disk_space`, `cpu_period`, `benchmark`,
   `cpu_quota`, `blkio_weight` — there is no accelerator field, so a service needing one
   could not be scheduled. whisper runs with `-ng`, on CPU. This is the same conclusion
   [`remote-browser`](https://github.com/celaut-basics/remote-browser) reached.
@@ -348,6 +398,13 @@ often, and yt-dlp ships releases to keep up; this pins `2026.08.19` because a
 downloader that updates itself is one whose behaviour is not what the spec was
 reviewed with. The cost is that this line needs bumping periodically, and the symptom
 will be `502` with yt-dlp's own message in `detail`.
+
+**yt-dlp may need a JavaScript runtime for YouTube.** Recent yt-dlp releases warn
+that YouTube extraction without an external JavaScript runtime (for example Deno) is
+deprecated, and that some formats can then be missing. This image has no JavaScript
+runtime. The live run above found an audio format with the pinned release. If a later
+release needs one, the symptom is `502` with "Requested format is not available" in
+`detail`. The fix is a pinned Deno binary in the runtime stage.
 
 **yt-dlp is frequently rate-limited or blocked from datacenter IPs.** A node running
 this in a cloud may see failures that a workstation does not. The live test is opt-in

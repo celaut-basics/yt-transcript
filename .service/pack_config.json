@@ -1,8 +1,4 @@
 {
-  "service_dependencies_directory": "__services__",
-  "metadata_dependencies_directory": "__metadata__",
-  "blocks_directory": "__block__",
-  "zip": false,
   "include": [
     "service"
   ],

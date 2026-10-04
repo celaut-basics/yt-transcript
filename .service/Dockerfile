@@ -13,8 +13,9 @@
 # Pinned by the index digest, which is the multi-arch one `debian:bookworm-slim`
 # resolved to -- the same digest `celaut-basics/ergo-node` pins. Its linux/arm64
 # member is sha256:6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f;
-# pinning the index rather than that member is what lets TARGETARCH below be a
-# one-line change instead of a second digest to look up.
+# pinning the index rather than that member is what lets the platform (from
+# `architecture` in service.json) be a one-line change instead of a second digest to
+# look up.
 ARG BASE_DIGEST=sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 # ------------------------------------------------------------------------- toolchain
@@ -162,12 +163,10 @@ RUN echo "${WHISPER_MODEL_SHA256}  /opt/whisper/models/${WHISPER_MODEL}" | sha25
 # -------------------------------------------------------------------------- runtime
 FROM debian:bookworm-slim@${BASE_DIGEST} AS runtime
 
-# `TARGETARCH` is set by BuildKit from the platform being built, so the yt-dlp
-# artifact below follows the platform rather than being a second place to edit.
-# Building this for amd64 is `architecture` in `.service/service.json` plus the one
-# checksum in YTDLP_SHA256_AMD64 -- the ffmpeg and whisper stages compile for
-# whatever they are built on, and the model is architecture-independent.
-ARG TARGETARCH
+# Nothing in this stage depends on the architecture: the packages are the same
+# versions on arm64 and amd64, the yt-dlp zipapp below is Python, the model is
+# data, and the ffmpeg and whisper stages compile for the platform BuildKit builds.
+# The README says what an amd64 build needs from the whisper stage.
 
 # Python 3.11 and the CA store, pinned to the exact versions in bookworm at the time
 # this was written, the same discipline `celaut-basics/ergo-node` applies to its eight
@@ -267,7 +266,7 @@ RUN set -eu; \
     test -s /opt/whisper/models/ggml-base.bin; \
     command -v setpriv > /dev/null; \
     id ytt > /dev/null; \
-    cd /service && /usr/bin/python3 -c "import config, urls, whisper, pipeline, server"; \
+    cd /service && /usr/bin/python3 -c "import config, urls, whisper, pipeline, server, resolver"; \
     setpriv --reuid 10001 --regid 10001 --clear-groups /bin/sh -c '\
         head -c 4 /opt/whisper/models/ggml-base.bin > /dev/null \
         && /opt/ffmpeg/bin/ffmpeg -version > /dev/null \

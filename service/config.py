@@ -10,9 +10,10 @@ the only thing standing between "transcribe this clip" and "download an eight-ho
 livestream into an instance with a 4 GB disk".
 """
 
+import ipaddress
 import os
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 # The hosts a URL may name. Not a convenience list -- it is the security boundary
 # this service is built around, and it is checked against the parsed URL's host
@@ -38,6 +39,15 @@ ALLOWED_HOSTS = frozenset({
 # argv: it is an env var the node's operator sets, not caller input, but an argv this
 # service builds is an argv this service should be able to state the shape of.
 _LANG_RE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz-")
+
+# The resolvers the guest uses when the node gives it none. nodo serves no DNS and
+# writes no /etc/resolv.conf into a guest (`src/virtualizers/microvm/network.py`),
+# so under a node the image's own file is all there is, and an image built by
+# BuildKit carries no usable one. Three operators, so that one outage or one block
+# does not stop every download. Three is also the limit: glibc reads at most three
+# `nameserver` lines (MAXNS) and ignores the rest without a word.
+DEFAULT_DNS_SERVERS = ("9.9.9.9", "1.1.1.1", "8.8.8.8")
+MAX_DNS_SERVERS = 3
 
 
 class ConfigError(ValueError):
@@ -70,6 +80,35 @@ def _int_env(
     return value
 
 
+def dns_servers(env: Dict[str, str]) -> Optional[Tuple[str, ...]]:
+    """`YT_DNS_SERVERS` as a tuple of IP addresses, or None if it is not set.
+
+    The value is one to three IP addresses, separated by spaces or commas. Each one
+    is parsed as an address, not matched as text: it is written into
+    /etc/resolv.conf by root, so a value that could carry a second line or a
+    hostname is refused rather than written.
+    """
+    raw = env.get("YT_DNS_SERVERS")
+    if raw is None or not raw.strip():
+        return None
+    tokens = raw.replace(",", " ").split()
+    if len(tokens) > MAX_DNS_SERVERS:
+        raise ConfigError(
+            f"YT_DNS_SERVERS names {len(tokens)} servers. glibc reads at most "
+            f"{MAX_DNS_SERVERS}, so give {MAX_DNS_SERVERS} or fewer."
+        )
+    servers = []
+    for token in tokens:
+        try:
+            servers.append(str(ipaddress.ip_address(token)))
+        except ValueError:
+            raise ConfigError(
+                f"YT_DNS_SERVERS: {token!r} is not an IP address. Give addresses, "
+                "not names: nothing can resolve a name before a resolver is set."
+            ) from None
+    return tuple(servers)
+
+
 @dataclass(frozen=True)
 class Config:
     port: int
@@ -77,6 +116,9 @@ class Config:
     threads: int
     language: str
     request_timeout_s: int
+    # Read here so that a bad value also stops the server, not only the entrypoint
+    # step that writes it (`service/resolver.py`). Empty means "not set".
+    dns_servers: Tuple[str, ...] = ()
 
     @property
     def model_path(self) -> str:
@@ -158,4 +200,5 @@ def load(
         threads=threads,
         language=language,
         request_timeout_s=request_timeout_s,
+        dns_servers=dns_servers(env) or (),
     )

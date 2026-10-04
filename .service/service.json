@@ -18,7 +18,8 @@
         "YT_MAX_DURATION_S",
         "YT_WHISPER_THREADS",
         "YT_LANGUAGE",
-        "YT_REQUEST_TIMEOUT_S"
+        "YT_REQUEST_TIMEOUT_S",
+        "YT_DNS_SERVERS"
     ],
     "network": [
         {

@@ -93,7 +93,7 @@ check_in_image "setpriv is available for the entrypoint to drop privileges" \
 check_in_image "the unprivileged user exists" \
     "id ytt"
 check_in_image "no shell interpreter is needed by the service modules" \
-    "cd /service && /usr/bin/python3 -c 'import config, urls, whisper, pipeline, server'"
+    "cd /service && /usr/bin/python3 -c 'import config, urls, whisper, pipeline, server, resolver'"
 echo
 
 # ------------------------------------------------------------------- it runs

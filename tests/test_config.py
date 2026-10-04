@@ -148,6 +148,39 @@ class TestRefused(unittest.TestCase):
         self.assertIn("YT_MAX_DURATION_S", str(caught.exception))
 
 
+class TestDnsServers(unittest.TestCase):
+    """`YT_DNS_SERVERS` is written into /etc/resolv.conf by root."""
+
+    def test_unset_is_empty(self):
+        self.assertEqual(load().dns_servers, ())
+        self.assertIsNone(config.dns_servers({}))
+        self.assertIsNone(config.dns_servers({"YT_DNS_SERVERS": " "}))
+
+    def test_spaces_and_commas_both_separate(self):
+        self.assertEqual(
+            load(YT_DNS_SERVERS="9.9.9.9, 1.1.1.1 2620:fe::fe").dns_servers,
+            ("9.9.9.9", "1.1.1.1", "2620:fe::fe"),
+        )
+
+    def test_addresses_are_normalised(self):
+        self.assertEqual(
+            config.dns_servers({"YT_DNS_SERVERS": "2620:00fe:0::fe"}),
+            ("2620:fe::fe",),
+        )
+
+    def test_refused(self):
+        for because, value in (
+            ("a hostname", "dns.google"),
+            ("a newline smuggling an option", "1.1.1.1\noptions ndots:15"),
+            ("a port", "1.1.1.1:53"),
+            ("leading zeros", "010.0.0.1"),
+            ("more than glibc reads", "1.1.1.1 1.0.0.1 9.9.9.9 8.8.8.8"),
+        ):
+            with self.subTest(because=because):
+                with self.assertRaises(config.ConfigError):
+                    load(YT_DNS_SERVERS=value)
+
+
 class TestBoundaries(unittest.TestCase):
     def test_inclusive_edges_are_accepted(self):
         self.assertEqual(load(YT_PORT="1").port, 1)

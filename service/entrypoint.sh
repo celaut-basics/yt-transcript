@@ -41,16 +41,26 @@ if [ "$(id -u)" -eq 0 ]; then
         log "FATAL: setpriv is not in this image, so privileges cannot be dropped"
         exit 2
     fi
+    # A DNS resolver, while still root, because /etc is root's. Under nodo the guest
+    # has none and every yt-dlp lookup would fail; service/resolver.py says why and
+    # when it leaves the file alone. `-E -s`: no PYTHON* variable and no user site
+    # directory can change what runs as root here.
+    if ! /usr/bin/python3 -E -s /service/resolver.py; then
+        log "FATAL: could not set up name resolution"
+        exit 2
+    fi
+
     log "dropping to ${SERVICE_USER} (uid ${SERVICE_UID}) with --no-new-privs"
     exec setpriv \
         --reuid "$SERVICE_UID" \
         --regid "$SERVICE_GID" \
         --clear-groups \
         --no-new-privs \
-        /usr/bin/python3 /service/server.py
+        /usr/bin/python3 -E -s /service/server.py
 fi
 
 # Already unprivileged -- which is how this runs under `docker run --user`, and how
-# the tests run it. Nothing to drop; just start.
+# the tests run it. Nothing to drop, and /etc/resolv.conf cannot be written: the
+# runtime's own resolver is used. Just start.
 log "already running as uid $(id -u), starting without dropping privileges"
-exec /usr/bin/python3 /service/server.py
+exec /usr/bin/python3 -E -s /service/server.py

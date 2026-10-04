@@ -109,6 +109,19 @@ def dns_servers(env: Dict[str, str]) -> Optional[Tuple[str, ...]]:
     return tuple(servers)
 
 
+def available_cpus() -> int:
+    """The CPUs this process may run on, which is not always every CPU the host has.
+
+    `sched_getaffinity` honours a cpuset (`docker run --cpuset-cpus`), where
+    `os.cpu_count()` does not. In a nodo microVM the two agree: the VM is booted with
+    `ceil(cpu_quota / cpu_period)` vCPUs from `resources.at_init`.
+    """
+    try:
+        return len(os.sched_getaffinity(0)) or 1
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
 @dataclass(frozen=True)
 class Config:
     port: int
@@ -144,7 +157,7 @@ def load(
     the machine the tests run on.
     """
     env = dict(os.environ if env is None else env)
-    count = cpu_count or (lambda: os.cpu_count() or 1)
+    count = cpu_count or available_cpus
 
     port = _int_env(env, "YT_PORT", default=8080, minimum=1, maximum=65535)
 

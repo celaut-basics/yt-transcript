@@ -181,6 +181,16 @@ class TestDnsServers(unittest.TestCase):
                     load(YT_DNS_SERVERS=value)
 
 
+class TestCpuCount(unittest.TestCase):
+    def test_it_is_at_least_one(self):
+        self.assertGreaterEqual(config.available_cpus(), 1)
+
+    def test_it_is_the_default_thread_count(self):
+        self.assertEqual(
+            config.load(env={}).threads, config.available_cpus()
+        )
+
+
 class TestBoundaries(unittest.TestCase):
     def test_inclusive_edges_are_accepted(self):
         self.assertEqual(load(YT_PORT="1").port, 1)

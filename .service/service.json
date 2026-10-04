@@ -32,11 +32,15 @@
     "resources": {
         "at_init": {
             "mem_limit": 600000000,
-            "disk_space": 3000000000
+            "disk_space": 3000000000,
+            "cpu_period": 100000,
+            "cpu_quota": 200000
         },
         "at_most": {
             "mem_limit": 1500000000,
-            "disk_space": 4000000000
+            "disk_space": 4000000000,
+            "cpu_period": 100000,
+            "cpu_quota": 200000
         }
     }
 }

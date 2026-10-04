@@ -92,6 +92,19 @@ check_in_image "setpriv is available for the entrypoint to drop privileges" \
     "command -v setpriv"
 check_in_image "the unprivileged user exists" \
     "id ytt"
+# nodo writes no /etc/resolv.conf into a guest, so the entrypoint writes one when it
+# finds /__config__. Under Docker there is no /__config__ and Docker's own resolver
+# must stay. Both halves, as root, the way the entrypoint runs the step.
+check_in_image "outside a node the resolver step keeps the runtime's resolver" \
+    "cp /etc/resolv.conf /tmp/before \
+        && /usr/bin/python3 -E -s /service/resolver.py \
+        && cmp -s /etc/resolv.conf /tmp/before"
+check_in_image "under a node the resolver step writes public resolvers" \
+    "touch /__config__ \
+        && /usr/bin/python3 -E -s /service/resolver.py \
+        && grep -q '^nameserver 9.9.9.9' /etc/resolv.conf"
+check_in_image "a bad YT_DNS_SERVERS stops the resolver step" \
+    "! YT_DNS_SERVERS=dns.example /usr/bin/python3 -E -s /service/resolver.py"
 check_in_image "no shell interpreter is needed by the service modules" \
     "cd /service && /usr/bin/python3 -c 'import config, urls, whisper, pipeline, server, resolver'"
 echo
@@ -144,6 +157,12 @@ if docker logs "$NAME" 2>&1 | grep -q "dropping to ytt"; then
     ok "the entrypoint dropped privileges"
 else
     no "the entrypoint dropped privileges"
+fi
+
+if docker logs "$NAME" 2>&1 | grep -q "keeping the runtime's resolver"; then
+    ok "the entrypoint kept Docker's resolver (no /__config__)"
+else
+    no "the entrypoint kept Docker's resolver (no /__config__)"
 fi
 
 running_uid=$(docker exec "$NAME" sh -c 'id -u' 2>/dev/null || echo "?")

@@ -20,14 +20,27 @@ ARG BASE_DIGEST=sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b0
 
 # ------------------------------------------------------------------------- toolchain
 FROM debian:bookworm-slim@${BASE_DIGEST} AS toolchain
+
+# apt reads a frozen snapshot of the Debian archive, not the live mirror. See the
+# same block in the runtime stage, below, for the reason. To update, change
+# DEBIAN_SNAPSHOT here and in the runtime stage together.
+ARG DEBIAN_SNAPSHOT=20261004T000000Z
+RUN sed -i \
+      -e "s|^URIs: http://deb.debian.org/debian\$|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
+      -e "s|^URIs: http://deb.debian.org/debian-security\$|URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+      -e '/^URIs: /a Check-Valid-Until: no' \
+      /etc/apt/sources.list.d/debian.sources \
+    && [ "$(grep -c '^URIs: http://snapshot.debian.org/' /etc/apt/sources.list.d/debian.sources)" = 2 ]
+
 # Not pinned to exact versions, unlike the runtime's packages below, and the reason is
 # the asymmetry that matters: nothing installed here reaches the exported filesystem.
 # A compiler that changes cannot change what this service *is* unless it changes what
 # it *builds*, and what it builds is checked by the runtime's own smoke test. Pinning
 # these would buy a build that breaks every time Debian patches gcc, for no property
-# this image keeps.
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
+# this image keeps. The snapshot above gives the same result without that cost: the
+# newest version in the snapshot is the one installed, on every build.
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install --no-install-recommends -y \
         build-essential \
         cmake \
         ca-certificates \
@@ -168,11 +181,30 @@ FROM debian:bookworm-slim@${BASE_DIGEST} AS runtime
 # data, and the ffmpeg and whisper stages compile for the platform BuildKit builds.
 # The README says what an amd64 build needs from the whisper stage.
 
-# Python 3.11 and the CA store, pinned to the exact versions in bookworm at the time
-# this was written, the same discipline `celaut-basics/ergo-node` applies to its eight
-# packages. The trade is stated there and holds here: a Debian security update cannot
-# silently change this image, and equally the build stops until this file is edited
-# when one of these leaves the mirror.
+# apt reads a frozen snapshot of the Debian archive, not the live mirror.
+#
+# The live mirror keeps one version of each package per suite. An exact pin against it
+# stops resolving as soon as Debian publishes a security update, and the build then
+# fails in apt for a reason that has nothing to do with this service. The same failure
+# stopped every image of `celaut-basics/remote-browser` more than once.
+# snapshot.debian.org keeps every state of the archive at a fixed URL, so the pins
+# below resolve for as long as that service exists.
+#
+# Check-Valid-Until is off because a Release file in a snapshot is old by design. The
+# `grep` makes the build fail if the base image changes the layout of its sources
+# file, rather than fall back to the live mirror without a word. To update, change
+# DEBIAN_SNAPSHOT and the pins together, and in the toolchain stage as well.
+ARG DEBIAN_SNAPSHOT=20261004T000000Z
+RUN sed -i \
+      -e "s|^URIs: http://deb.debian.org/debian\$|URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}|" \
+      -e "s|^URIs: http://deb.debian.org/debian-security\$|URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}|" \
+      -e '/^URIs: /a Check-Valid-Until: no' \
+      /etc/apt/sources.list.d/debian.sources \
+    && [ "$(grep -c '^URIs: http://snapshot.debian.org/' /etc/apt/sources.list.d/debian.sources)" = 2 ]
+
+# Python 3.11 and the CA store, pinned to the exact versions in the snapshot above, the
+# same discipline `celaut-basics/ergo-node` applies to its eight packages. A Debian
+# security update cannot silently change this image.
 #
 # `python3.11` and not `python3`: the `python3` metapackage is a moving pointer, which
 # is the one thing this file is built to avoid. The service is stdlib-only -- no pip,
@@ -181,9 +213,9 @@ FROM debian:bookworm-slim@${BASE_DIGEST} AS runtime
 #
 # `ca-certificates` is here for exactly one reason: yt-dlp speaks TLS to YouTube and
 # without a trust store every fetch fails certificate verification. It is not pinned
-# to a patch version the way the rest are, because the *contents* of a CA bundle are
-# a moving target by design and pinning one would mean shipping a trust store that
-# ages out.
+# to a version the way the rest are, because the *contents* of a CA bundle are a
+# moving target by design. The snapshot still fixes which version apt picks: the
+# newest one in the snapshot, which is the one from the security suite.
 #
 # `setpriv` is not installed: it is part of `util-linux`, which is in the base image
 # already (`/usr/bin/setpriv`). `service/entrypoint.sh` refuses to start if it is
@@ -196,8 +228,8 @@ FROM debian:bookworm-slim@${BASE_DIGEST} AS runtime
 # which is exactly the failure a smoke test exists to turn into a build error rather
 # than a broken service id. Pinned to the version matching the gcc 12 that compiled
 # it in the toolchain stage.
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install --no-install-recommends -y \
         python3.11=3.11.2-6+deb12u8 \
         python3.11-minimal=3.11.2-6+deb12u8 \
         libpython3.11-stdlib=3.11.2-6+deb12u8 \

@@ -137,6 +137,9 @@ image has no usable one. So the entrypoint writes one before it drops privileges
   (`service/urls.py`). The check uses `urlsplit().hostname`, after parsing.
 - No shell runs. yt-dlp reads no config file (`--ignore-config`). No cookie and no
   credential exists to leak.
+- yt-dlp runs without its generic extractor (`--use-extractors default,-generic`).
+  That extractor fetches any page and follows its links and redirects. Without it, yt-dlp
+  refuses a URL that no YouTube extractor claims, and sends no request.
 
 An operator who wants the node to enforce a limit uses `service_networks` in
 `config.yaml`. `NODE-REQUIREMENTS.md` gives the result under each policy.
@@ -262,7 +265,7 @@ Dockerfile plus the resources in `service.json`, and costs ~2.5x the CPU time.
 ## Tests
 
 ```sh
-sh tests/run.sh                                  # 157 offline tests, ~2 s
+sh tests/run.sh                                  # 158 offline tests, ~2 s
 sh tests/test_image.sh                           # checks against a built image
 YT_TRANSCRIPT_LIVE=1 sh tests/test_image.sh      # + one real transcription
 ```

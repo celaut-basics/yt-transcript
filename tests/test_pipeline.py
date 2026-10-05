@@ -196,6 +196,23 @@ class TestArgv(unittest.TestCase):
             pipeline.download_audio("https://youtu.be/x", "/w", pipeline.Deadline(60))
         self.assertIn("--ignore-config", self._argv_of(run.call_args))
 
+    def test_the_generic_extractor_is_off(self):
+        """It would follow a page's links to hosts that the allow-list never saw."""
+        with mock.patch.object(
+            pipeline, "_run", return_value=(0, metadata(), "")
+        ) as run:
+            pipeline.probe("https://youtu.be/x", a_config(), pipeline.Deadline(60))
+        self._assert_generic_is_off(self._argv_of(run.call_args))
+        with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
+                mock.patch.object(os, "listdir", return_value=["audio.webm"]):
+            pipeline.download_audio("https://youtu.be/x", "/w", pipeline.Deadline(60))
+        self._assert_generic_is_off(self._argv_of(run.call_args))
+
+    def _assert_generic_is_off(self, argv):
+        index = argv.index("--use-extractors")
+        self.assertEqual(argv[index + 1], "default,-generic")
+        self.assertLess(index, argv.index("--"))
+
     def test_download_bounds_the_bytes_as_well_as_the_time(self):
         with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
                 mock.patch.object(os, "listdir", return_value=["audio.webm"]):

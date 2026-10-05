@@ -126,29 +126,41 @@ def _tail(text: str, lines: int = 3, limit: int = 600) -> str:
     return joined[:limit]
 
 
+# The options every yt-dlp call gets, so the two calls cannot drift apart.
+_YTDLP_COMMON = (
+    "--no-playlist",              # a watch URL inside a playlist is one video
+    "--ignore-config",            # no config file can add options to this argv
+    # The generic extractor is what yt-dlp falls back to for any URL that no site
+    # extractor claims. It fetches the page and follows the links, redirects and
+    # embeds in it, so it could send this process to a host that `urls.py` never
+    # allowed. Without it, a URL that no YouTube extractor claims is refused by
+    # yt-dlp, with no request.
+    "--use-extractors", "default,-generic",
+    "--no-warnings",
+    "--no-progress",
+    # `--no-call-home` is deliberately absent: it is deprecated as of the pinned
+    # 2026.08.19 and prints a deprecation notice on every invocation, which ends
+    # up in the `detail` this service returns to callers. yt-dlp phones home
+    # nowhere by default now, so the flag bought nothing and cost a warning.
+    "--no-cookies",               # and nothing reads a cookie file: see README
+    "--no-cookies-from-browser",
+    "--socket-timeout", "30",
+    "--retries", "2",
+)
+
+
 def probe(url: str, cfg: config.Config, deadline: Deadline) -> Dict[str, Any]:
     """Metadata only. Nothing is downloaded, and the duration decides the rest."""
     argv = [
         config.YTDLP_BIN,
         "--skip-download",
         "--dump-single-json",
-        "--no-playlist",          # a watch URL inside a playlist is one video
+        *_YTDLP_COMMON,
         # A URL that is only a playlist or a channel (`/playlist?list=`, `/@name`) is
         # still a playlist under --no-playlist. Without this, the probe extracts
         # every entry of it, which for a channel is thousands of requests, before
         # the playlist is refused below.
         "--flat-playlist",
-        "--ignore-config",        # no config file can add options to this argv
-        "--no-warnings",
-        "--no-progress",
-        # `--no-call-home` is deliberately absent: it is deprecated as of the pinned
-        # 2026.08.19 and prints a deprecation notice on every invocation, which ends
-        # up in the `detail` this service returns to callers. yt-dlp phones home
-        # nowhere by default now, so the flag bought nothing and cost a warning.
-        "--no-cookies",           # and nothing reads a cookie file: see README
-        "--no-cookies-from-browser",
-        "--socket-timeout", "30",
-        "--retries", "2",
         "--",                     # everything after this is an operand, not a flag
         url,
     ]
@@ -218,17 +230,10 @@ def download_audio(url: str, workdir: str, deadline: Deadline) -> str:
     template = os.path.join(workdir, "audio.%(ext)s")
     argv = [
         config.YTDLP_BIN,
+        *_YTDLP_COMMON,
         "-f", "bestaudio/best",
-        "--no-playlist",
-        "--ignore-config",
-        "--no-warnings",
-        "--no-progress",
-        "--no-cookies",
-        "--no-cookies-from-browser",
         "--no-part",
         "--max-filesize", "512m",
-        "--socket-timeout", "30",
-        "--retries", "2",
         "-o", template,
         "--",
         url,

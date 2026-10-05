@@ -112,6 +112,8 @@ It declares `["*"]`, gives the reason in the `prose`, and narrows the egress
 - No shell runs anywhere. Every subprocess gets an argv list and a replaced
   environment, so an inherited `http_proxy` cannot send a fetch somewhere else.
   `--ignore-config` stops a yt-dlp config file from adding options.
+  `--use-extractors default,-generic` removes the generic extractor, which would
+  follow the links and redirects of a page to hosts that the allow-list never saw.
 - No cookie and no credential exists in the image.
 
 An operator who wants the node to enforce a limit uses `service_networks` in

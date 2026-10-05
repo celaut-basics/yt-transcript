@@ -26,7 +26,6 @@ import sys
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from socketserver import ThreadingMixIn
 
 import config
 import pipeline

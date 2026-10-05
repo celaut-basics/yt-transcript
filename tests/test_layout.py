@@ -72,7 +72,12 @@ class TestServiceJson(unittest.TestCase):
         self.assertEqual(ports, [config.load(env={}).port])
 
     def test_every_env_the_code_reads_is_declared_and_no_other(self):
-        """nodo delivers declared envs only. An undeclared one never arrives."""
+        """The `envs` list is the operator contract. The packer does not record it.
+
+        `nodo execute -e` still delivers each pair as a Linux env var
+        (`src/utils/guest_env.py`). Keep the list in lockstep with the code so the
+        README and `service.json` name every variable this process reads.
+        """
         self.assertEqual(set(self.spec["envs"]), _envs_read_by_the_code())
 
     def test_every_declared_env_is_delivered_as_a_real_env_var(self):
@@ -130,6 +135,16 @@ class TestDockerfile(unittest.TestCase):
     def test_the_service_code_lands_where_entry_path_points(self):
         copies = [rest for word, rest in self.instructions if word == "COPY"]
         self.assertIn("./service /service", copies)
+
+    def test_apt_reads_one_debian_snapshot_in_every_stage(self):
+        """A live-mirror pin breaks when Debian publishes a security update."""
+        with open(os.path.join(SERVICE_DIR, "Dockerfile"), encoding="utf-8") as handle:
+            text = handle.read()
+        snaps = re.findall(r"DEBIAN_SNAPSHOT=([0-9TZ]+)", text)
+        self.assertGreaterEqual(len(snaps), 2)
+        self.assertEqual(len(set(snaps)), 1)
+        self.assertIn("snapshot.debian.org", text)
+        self.assertGreaterEqual(text.count("Acquire::Retries=5"), 2)
 
     def test_every_service_module_is_imported_by_the_smoke_test(self):
         """A module the build does not import is a module the build does not check."""

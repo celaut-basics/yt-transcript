@@ -81,8 +81,10 @@ whichever tool failed:
 
 ```json
 {"status": "ok", "model": "ggml-base.bin", "max_duration_s": 3600,
- "language": "auto", "threads": 4, "busy": false}
+ "language": "auto", "threads": 2, "busy": false}
 ```
+
+`threads` is the number of CPUs this process may use. Under nodo that is 2 (the vCPU quota). Outside a node it is `sched_getaffinity`.
 
 Answers while a transcription is running — the semaphore serialises the *work*, not
 the server, because a health check that queued behind an hour of audio would read to
@@ -92,19 +94,22 @@ a node as an instance that had died.
 
 | variable | | what it is |
 |---|---|---|
-| `YT_PORT` | `8080` | The port the HTTP slot listens on. Must match `api[0].port` in `.service/service.json`. |
+| `YT_PORT` | `8080` | The port the HTTP slot listens on. Must stay `8080` under nodo: the node maps the packed `api[0].port`, not this variable. Use another value only in Docker. |
 | `YT_MAX_DURATION_S` | `3600` | Longest video accepted, checked **before** downloading. |
 | `YT_WHISPER_THREADS` | *(the instance's CPUs)* | whisper's `-t`. `0` means "as many CPUs as this process may use" (`sched_getaffinity`). Under nodo that is the 2 vCPUs that `service.json` declares. whisper's own default of 4 would oversubscribe that. |
 | `YT_LANGUAGE` | `auto` | Language code (`en`, `es`, `zh-tw`) or `auto` to detect. |
 | `YT_REQUEST_TIMEOUT_S` | `4 × YT_MAX_DURATION_S` | Whole-request budget, shared across probe, download, decode and transcribe. |
 | `YT_DNS_SERVERS` | *(see below)* | One to three resolver IP addresses, separated by spaces or commas. Under a node the default is `9.9.9.9 1.1.1.1 8.8.8.8`; outside a node the default is to keep the resolver of the runtime. |
 
-Pass them at launch with `nodo execute -e <name> <value>`. nodo delivers each
-declared name as a real environment variable of the entrypoint, and also in
-`/__config__`. Every one is refused loudly rather than clamped: `YT_MAX_DURATION_S=abc` stops the
-service at start instead of silently becoming 3600. A limit that reverts to its
-default when mistyped is not the limit the spec declares — and this one is what stands
-between a clip and an eight-hour livestream on a 4 GB disk.
+Pass them at launch with `nodo execute -e <name> <value>`. The node writes each
+pair into `/__config__` and, when the name is a C identifier, also as a Linux
+environment variable (`src/utils/guest_env.py`). The packer does **not** record the
+`envs` list in `service.json` (`src/packers/zip_with_dockerfile.py`). The list is
+still the contract this service reads. Every value is refused loudly rather than
+clamped: `YT_MAX_DURATION_S=abc` stops the service at start instead of silently
+becoming 3600. A limit that reverts to its default when mistyped is not the limit
+the spec declares — and this one is what stands between a clip and an eight-hour
+livestream on a 4 GB disk.
 
 ## The network it asks for
 
@@ -157,12 +162,14 @@ nodo packs                              # the state of the packs
 ```
 
 `nodo pack` reads `.service/` (`Dockerfile`, `service.json`, `pack_config.json`).
-The packer builds for the `architecture` in `service.json`, `linux/arm64`, and it
-must match the architecture of the host that packs. The `include` list packs only
+The packer builds for the `architecture` in `service.json` (`linux/arm64`). A host of
+another architecture can pack only if it has a binfmt handler for arm64. A node that
+boots the service must be able to run that architecture (Cloud Hypervisor on the same
+arch, or QEMU if the operator has enabled it). The `include` list packs only
 `service/`, and the packer rewrites `COPY ./service` to `COPY service/service`.
 
 ```sh
-nodo inspect yt-transcript              # the declared envs: only these can be passed with -e
+nodo inspect yt-transcript              # the packed spec (not the `envs` list)
 nodo estimate yt-transcript             # feasibility and cost before a launch
 nodo execute -e YT_MAX_DURATION_S 1800 -e YT_LANGUAGE en yt-transcript
 nodo instances                          # the instance id and the API address
@@ -171,7 +178,7 @@ curl -s -X POST http://<api address>/transcribe \
   -d '{"url": "https://www.youtube.com/watch?v=ps3kWOQRQnY"}'
 nodo tunnel <instance id> 8080          # to reach the slot from another host
 nodo observe <instance id>              # CPU, memory and the network flows
-sudo nodo kill <instance id>
+nodo kill <instance id>
 ```
 
 The address that `nodo instances` shows is reachable from the node host only. Use
@@ -202,15 +209,15 @@ the repository root here and from the packer's `.service/` context.
 | `ffmpeg` 7.1.5 | SHA-256 computed from the published tarball |
 | `whisper.cpp` v1.9.4 | SHA-256 of the release tarball |
 | `ggml-base.bin` | `60ed5bc3…2efe`, which is also the file's Git-LFS object id on Hugging Face — so the digest is the one the hosting itself addresses it by |
-| Debian packages | exact patch versions |
+| Debian packages | exact patch versions from snapshot `20261004T000000Z` |
 
 Two caveats stated rather than glossed over. **FFmpeg publishes a detached GPG
 signature but no `SHA256SUMS`**, so like Ergo's jar in `ergo-node`, what is pinned is
 *an* artifact in a reviewed file, not a checksum compared against an upstream
-document; verifying the signature would be the improvement. And **pinning Debian
-packages to the patch version** means the build stops when one leaves the mirror after
-a security update, until this file is edited — the same trade `ergo-node` and
-`bitcoin-node` already make.
+document; verifying the signature would be the improvement. Apt reads
+**snapshot.debian.org**, not the live mirror, so a Debian security update does not
+break the pin. To take a newer snapshot, change `DEBIAN_SNAPSHOT` and the pins
+together.
 
 ### Architecture
 
@@ -265,7 +272,7 @@ Dockerfile plus the resources in `service.json`, and costs ~2.5x the CPU time.
 ## Tests
 
 ```sh
-sh tests/run.sh                                  # 158 offline tests, ~2 s
+sh tests/run.sh                                  # offline tests, python3 only
 sh tests/test_image.sh                           # checks against a built image
 YT_TRANSCRIPT_LIVE=1 sh tests/test_image.sh      # + one real transcription
 ```
@@ -346,11 +353,13 @@ Worth naming, because each was invisible in a passing build:
 
 ## What was verified by running it
 
-On this machine (Apple Silicon, `linux/arm64` under Docker):
+The Docker numbers below are from PR #1 (`3064cc4`) on Apple Silicon (`linux/arm64`).
+This branch did not rebuild the image and did not repeat the live transcription.
 
-- **A real video transcribed end to end.** `ps3kWOQRQnY`, a 55-second NASA clip:
+- **A real video transcribed end to end (PR #1 image).** `ps3kWOQRQnY`, a 55-second NASA clip:
   downloaded, decoded and transcribed in **6.81 s**, detected language `en`, 2
-  segments, accurate text. The response in [The API](#the-api) is that run.
+  segments, accurate text. The response in [The API](#the-api) is that run. The
+  download used `yt-dlp` with the URL, which is still the path in this tree.
 - **The duration ceiling holds, before downloading.** A 10809 s video against
   `YT_MAX_DURATION_S=60` returned **413** naming both numbers, and `/tmp` in the
   container was **empty** afterwards — nothing was fetched.

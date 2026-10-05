@@ -227,12 +227,20 @@ index, the package versions are the same on arm64 and amd64, the yt-dlp zipapp i
 Python, and the model is data. ffmpeg and whisper.cpp compile for the platform that
 BuildKit builds.
 
-**For amd64, change `architecture` in `.service/service.json`, and look at the
-whisper stage.** `GGML_NATIVE=OFF` keeps the binary portable. On arm64 the baseline
-is armv8-a. On x86-64, with no other flag, ggml then builds without AVX, which makes
-whisper several times slower. An amd64 build needs `-DGGML_AVX=ON -DGGML_AVX2=ON
--DGGML_FMA=ON -DGGML_F16C=ON` (the hosts must then have AVX2). Nobody has built or
-measured it, so this repository does not ship an amd64 tree.
+**For amd64, change `architecture` in `.service/service.json`, and change the
+ffmpeg and whisper stages.**
+
+- ffmpeg: on x86-64, `configure` stops with `nasm/yasm not found or too old`. The
+  toolchain stage has no assembler. Add `--disable-x86asm` to the `configure`
+  line. The decoders then use C code only. This is enough for audio.
+- whisper: `GGML_NATIVE=OFF` keeps the binary portable. On arm64 the baseline is
+  armv8-a. On x86-64, with no other flag, ggml then builds without AVX, which makes
+  whisper several times slower. Add `-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON
+  -DGGML_F16C=ON` (the hosts must then have AVX2).
+
+With these three changes, an amd64 tree packed and ran on a real node (nodo `dev`
+`1c9ac612`, x86_64 with KVM, 2026-10-05). It transcribed a 19 s video in 11.5 s.
+That guest had one CPU only (nodo#486). This repository still ships the arm64 tree.
 
 ### What it costs to run
 

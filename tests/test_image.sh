@@ -12,8 +12,11 @@
 # red live run means "the service is fine, this host cannot reach YouTube", and those
 # have to be distinguishable or the suite is not worth running.
 #
-# Build the image first:
-#     docker buildx build --platform linux/arm64 -f .service/Dockerfile -t yt-transcript:test --load .
+# Build the image first, from a copy of the pack root with its links resolved (docker
+# does not follow a link out of the build context; nodo's copy does). Use amd64 on an
+# x86_64 host:
+#     rm -rf /tmp/ytt && cp -RL arm64 /tmp/ytt
+#     docker buildx build --platform linux/arm64 -f /tmp/ytt/.service/Dockerfile -t yt-transcript:test --load /tmp/ytt
 
 set -eu
 

@@ -1,0 +1,46 @@
+{
+    "tag": "yt-transcript",
+    "architecture": "linux/amd64",
+    "init": {
+        "entry_path": ["service", "entrypoint.sh"]
+    },
+    "api": [
+        {
+            "port": 8080,
+            "transport": "tcp",
+            "protocol": [
+                "http"
+            ]
+        }
+    ],
+    "envs": [
+        "YT_PORT",
+        "YT_MAX_DURATION_S",
+        "YT_WHISPER_THREADS",
+        "YT_LANGUAGE",
+        "YT_REQUEST_TIMEOUT_S",
+        "YT_DNS_SERVERS"
+    ],
+    "network": [
+        {
+            "tags": [
+                "*"
+            ],
+            "prose": "Open egress. yt-dlp gets a URL and resolves the names in it itself, and YouTube sends the media from hosts that change for each request (rN---sn-XXXXXXXX.googlevideo.com), so no list of hosts can name them. A hostname tag cannot replace this: nodo grants the addresses of a hostname on TCP 80 and 443 only and serves no DNS, so a program that looks up names cannot use the grant (docs/NETWORKS.md, Hostname tags, nodo#389), and a glob such as *.googlevideo.com is refused at pack time (nodo#391). The service narrows the egress itself: a URL must name one of five exact YouTube hosts (service/urls.py), yt-dlp is the only program that opens a socket, ffmpeg is built with no network protocol, and the image holds no cookie and no credential. Because nodo configures no resolver in the guest, the service uses public DNS resolvers on UDP/TCP 53 (YT_DNS_SERVERS replaces them). An operator who wants the node to enforce a narrower boundary uses service_networks in config.yaml; NODE-REQUIREMENTS.md gives the result under each policy."
+        }
+    ],
+    "resources": {
+        "at_init": {
+            "mem_limit": 600000000,
+            "disk_space": 3000000000,
+            "cpu_period": 100000,
+            "cpu_quota": 200000
+        },
+        "at_most": {
+            "mem_limit": 1500000000,
+            "disk_space": 4000000000,
+            "cpu_period": 100000,
+            "cpu_quota": 200000
+        }
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "include": [
+    "service"
+  ],
+  "ignore": [
+    "tests/",
+    "*.pyc",
+    "__pycache__/"
+  ]
+}

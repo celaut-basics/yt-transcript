@@ -1,3 +1,6 @@
+# linux/arm64 variant. nodo builds it with --opt platform=linux/arm64 (from
+# service.json). amd64/.service/Dockerfile adds two x86-64 build flags.
+
 # Every dependency is pinned by digest or by SHA-256, with no `latest` anywhere and
 # no package pinned only to its suite. This service is content-addressed -- two packs
 # of the same source tree have to produce the same id -- and it is also the thing the

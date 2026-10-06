@@ -1,4 +1,4 @@
-"""The environment contract from `.service/service.json`'s `envs`, exercised.
+"""The environment contract from `<arch>/.service/service.json`'s `envs`, exercised.
 
 Every value is passed in explicitly rather than read from `os.environ`, so these
 tests cannot be changed by the shell that runs them.

@@ -156,17 +156,30 @@ These are the commands of the current nodo CLI (`docs/USAGE.md`,
 hour. Use the Docker loop below for that.
 
 ```sh
-nodo pack /path/to/yt-transcript        # prints the service id (content hash)
-nodo pack /path/to/yt-transcript --local --detach --json   # local BuildKit, in the background
+nodo pack /path/to/yt-transcript/amd64  # linux/amd64; prints the service id (content hash)
+nodo pack /path/to/yt-transcript/arm64  # linux/arm64
+nodo pack /path/to/yt-transcript/amd64 --local --detach --json   # local BuildKit, in the background
 nodo packs                              # the state of the packs
 ```
 
-`nodo pack` reads `.service/` (`Dockerfile`, `service.json`, `pack_config.json`).
-The packer builds for the `architecture` in `service.json` (`linux/arm64`). A host of
-another architecture can pack only if it has a binfmt handler for arm64. A node that
-boots the service must be able to run that architecture (Cloud Hypervisor on the same
-arch, or QEMU if the operator has enabled it). The `include` list packs only
-`service/`, and the packer rewrites `COPY ./service` to `COPY service/service`.
+The repository has one pack root for each architecture, as in
+`celaut-basics/demo-service`:
+
+```
+amd64/  arm64/          pack roots
+├── .service/           Dockerfile, service.json, pack_config.json (one set per arch)
+├── service -> ../service
+└── .dockerignore -> ../.dockerignore
+service/                shared source
+```
+
+`nodo pack <dir>` reads only `<dir>/.service/` and copies `<dir>` to its cache. The
+copy follows symlinks, so `service/` reaches each pack root. The packer builds for the
+`architecture` in that `service.json`. A host of another architecture can pack only if
+it has a binfmt handler for it. A node that boots the service must be able to run that
+architecture (Cloud Hypervisor on the same arch, or QEMU if the operator has enabled
+it). The `include` list packs only `service/`, and the packer rewrites
+`COPY ./service` to `COPY service/service`.
 
 ```sh
 nodo inspect yt-transcript              # the packed spec (not the `envs` list)
@@ -190,7 +203,10 @@ dependencies, so `__config__` and `.dependencies` give it nothing.
 ### Locally, without a node
 
 ```sh
-docker buildx build --platform linux/arm64 -f .service/Dockerfile -t yt-transcript:test --load .
+# docker does not follow a link out of the build context, so build from a copy of
+# the pack root with its links resolved. Use amd64 on an x86_64 host.
+rm -rf /tmp/ytt && cp -RL arm64 /tmp/ytt
+docker buildx build --platform linux/arm64 -f /tmp/ytt/.service/Dockerfile -t yt-transcript:test --load /tmp/ytt
 
 # The entrypoint is named explicitly: the Dockerfile deliberately sets no ENTRYPOINT
 # or CMD, because nodo reads it from `init.entry_path` in service.json instead.
@@ -198,7 +214,7 @@ docker run -d -p 8080:8080 --entrypoint /service/entrypoint.sh yt-transcript:tes
 ```
 
 The Dockerfile uses only `./`-prefixed `COPY` sources, so the same file builds from
-the repository root here and from the packer's `.service/` context.
+the resolved pack root here and from the packer's `.service/` context.
 
 **Everything is pinned**, by digest or SHA-256, with no `latest` anywhere:
 
@@ -221,26 +237,23 @@ together.
 
 ### Architecture
 
-`linux/arm64`, the same as `ergo-node`, `bitcoin-node` and `remote-browser`. The
-runtime stage does not depend on the architecture: the Debian digest is a multi-arch
-index, the package versions are the same on arm64 and amd64, the yt-dlp zipapp is
-Python, and the model is data. ffmpeg and whisper.cpp compile for the platform that
-BuildKit builds.
-
-**For amd64, change `architecture` in `.service/service.json`, and change the
-ffmpeg and whisper stages.**
+Two trees: `amd64/` (`linux/amd64`) and `arm64/` (`linux/arm64`). The runtime stage
+does not depend on the architecture: the Debian digest is a multi-arch index, the
+package versions are the same on arm64 and amd64, the yt-dlp zipapp is Python, and
+the model is data. ffmpeg and whisper.cpp compile for the platform that BuildKit
+builds. The amd64 Dockerfile adds two flags:
 
 - ffmpeg: on x86-64, `configure` stops with `nasm/yasm not found or too old`. The
-  toolchain stage has no assembler. Add `--disable-x86asm` to the `configure`
-  line. The decoders then use C code only. This is enough for audio.
+  toolchain stage has no assembler. So `configure` has `--disable-x86asm`. The
+  decoders then use C code only. This is enough for audio.
 - whisper: `GGML_NATIVE=OFF` keeps the binary portable. On arm64 the baseline is
   armv8-a. On x86-64, with no other flag, ggml then builds without AVX, which makes
-  whisper several times slower. Add `-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON
-  -DGGML_F16C=ON` (the hosts must then have AVX2).
+  whisper several times slower. So the amd64 tree has `-DGGML_AVX=ON -DGGML_AVX2=ON
+  -DGGML_FMA=ON -DGGML_F16C=ON`. **An amd64 node must have AVX2.**
 
-With these three changes, an amd64 tree packed and ran on a real node (nodo `dev`
+An earlier amd64 tree with the same changes packed and ran on a real node (nodo `dev`
 `1c9ac612`, x86_64 with KVM, 2026-10-05). It transcribed a 19 s video in 11.5 s.
-That guest had one CPU only (nodo#486). This repository still ships the arm64 tree.
+That guest had one CPU only (nodo#486).
 
 ### What it costs to run
 
@@ -322,7 +335,9 @@ silent client is dropped after the idle timeout.
 **The resolver step** (`test_resolver.py`): public resolvers under a node, no change
 outside one, `YT_DNS_SERVERS` everywhere, and a bad value that stops the start.
 
-**The pack tree** (`test_layout.py`), read the way `nodo pack` reads it: the
+**The pack trees** (`test_layout.py`, `test_manifest.py`), read the way `nodo pack`
+reads them: one `<arch>/.service/` per architecture that declares its own
+`architecture`, the amd64 build flags, the
 entrypoint exists and is executable, the declared envs are the envs the code reads,
 the API port is the default port, the CPU quota gives two vCPUs, and the Dockerfile
 has `./` COPY sources and no `CMD`, `ENTRYPOINT`, `EXPOSE` or `ENV`.

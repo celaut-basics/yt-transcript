@@ -27,6 +27,10 @@ Concretely, one HTTP slot on `:8080`, and four programs behind it: `yt-dlp` to f
 `ffmpeg` to decode, `whisper.cpp` to transcribe, and ~400 lines of Python standard
 library to hold them together.
 
+yt-dlp extracts the URL one time per request. The probe step writes the metadata to
+`info.json` in the request's directory, and the download step reads that file with
+`--load-info-json`. It does not send the URL to YouTube a second time.
+
 ## The API
 
 ### `POST /transcribe`
@@ -382,7 +386,8 @@ This branch did not rebuild the image and did not repeat the live transcription.
 - **A real video transcribed end to end (PR #1 image).** `ps3kWOQRQnY`, a 55-second NASA clip:
   downloaded, decoded and transcribed in **6.81 s**, detected language `en`, 2
   segments, accurate text. The response in [The API](#the-api) is that run. The
-  download used `yt-dlp` with the URL, which is still the path in this tree.
+  download used `yt-dlp` with the URL. Now the download reads the probe's
+  `info.json` (`--load-info-json`), so there is one extraction per request.
 - **The duration ceiling holds, before downloading.** A 10809 s video against
   `YT_MAX_DURATION_S=60` returned **413** naming both numbers, and `/tmp` in the
   container was **empty** afterwards — nothing was fetched.

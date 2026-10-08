@@ -8,9 +8,11 @@ untrusted caller and the one thing it does with it is pass it to a downloader.
 The order matters and is the point of the probe step:
 
 1. **Probe** the URL for metadata only (`--skip-download`). Nothing is fetched but a
-   JSON blob, and the duration in it is checked against the ceiling.
-2. **Download** the audio track only, at a bounded size, into a directory that exists
-   for this request.
+   JSON blob, and the duration in it is checked against the ceiling. The blob is kept
+   in the request's directory.
+2. **Download** the audio track only, at a bounded size, into that directory. The
+   download reads the kept blob (`--load-info-json`) and does not extract the URL a
+   second time, so YouTube sees one extraction per request, not two.
 3. **Decode** to the 16 kHz mono PCM whisper wants. whisper.cpp reads a handful of
    formats itself, but "a handful" is decided by what YouTube served; converting
    first means exactly one audio path through this service.
@@ -149,8 +151,23 @@ _YTDLP_COMMON = (
 )
 
 
-def probe(url: str, cfg: config.Config, deadline: Deadline) -> Dict[str, Any]:
-    """Metadata only. Nothing is downloaded, and the duration decides the rest."""
+# The probe's metadata, kept for the download step. It is yt-dlp's own output, not
+# caller input, and it lives in the request's directory, which is always removed.
+INFO_JSON = "info.json"
+
+
+def probe(
+    url: str,
+    cfg: config.Config,
+    deadline: Deadline,
+    workdir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Metadata only. Nothing is downloaded, and the duration decides the rest.
+
+    With a `workdir`, the metadata is also written to `workdir/info.json`, and the
+    result names that file as `info_json`. `download_audio` reads it, so the URL is
+    extracted once per request.
+    """
     argv = [
         config.YTDLP_BIN,
         "--skip-download",
@@ -164,7 +181,7 @@ def probe(url: str, cfg: config.Config, deadline: Deadline) -> Dict[str, Any]:
         "--",                     # everything after this is an operand, not a flag
         url,
     ]
-    code, out, err = _run(argv, deadline, "metadata probe")
+    code, out, err = _run(argv, deadline, "metadata probe", cwd=workdir)
     if code != 0:
         raise PipelineError(
             "could not read the video's metadata",
@@ -211,15 +228,27 @@ def probe(url: str, cfg: config.Config, deadline: Deadline) -> Dict[str, Any]:
             status=413,
         )
 
+    info_json = None
+    if workdir is not None:
+        info_json = os.path.join(workdir, INFO_JSON)
+        fd = os.open(info_json, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(out)
+
     return {
         "duration_s": duration_s,
         "video_id": info.get("id") if isinstance(info.get("id"), str) else None,
         "title": info.get("title") if isinstance(info.get("title"), str) else None,
+        "info_json": info_json,
     }
 
 
-def download_audio(url: str, workdir: str, deadline: Deadline) -> str:
+def download_audio(info_json: str, workdir: str, deadline: Deadline) -> str:
     """The audio track, and only the audio track, into this request's directory.
+
+    The source is the probe's metadata file, not the URL. yt-dlp selects the format
+    from the formats in that file and fetches it. It does not run the extractor
+    again, so there is no second set of requests to YouTube's pages and APIs.
 
     `-f bestaudio/best` asks YouTube's servers for an audio-only stream, so a
     two-hour 4K video moves ~50 MB rather than ~8 GB. `--max-filesize` is the
@@ -235,8 +264,7 @@ def download_audio(url: str, workdir: str, deadline: Deadline) -> str:
         "--no-part",
         "--max-filesize", "512m",
         "-o", template,
-        "--",
-        url,
+        "--load-info-json", info_json,
     ]
     code, _out, err = _run(argv, deadline, "audio download", cwd=workdir)
     if code != 0:
@@ -333,12 +361,11 @@ def run(url: str, cfg: config.Config, now=time.monotonic) -> Dict[str, Any]:
     deadline = Deadline(cfg.request_timeout_s, now=now)
     started = now()
 
-    metadata = probe(url, cfg, deadline)
-
     workdir = tempfile.mkdtemp(prefix="yt-transcript-")
     try:
         os.chmod(workdir, 0o700)
-        source = download_audio(url, workdir, deadline)
+        metadata = probe(url, cfg, deadline, workdir=workdir)
+        source = download_audio(metadata["info_json"], workdir, deadline)
         wav = to_wav(source, workdir, deadline)
         result = transcribe(wav, workdir, cfg, deadline)
     finally:

@@ -8,6 +8,8 @@ always removed. No network, no yt-dlp, no ffmpeg, no model.
 
 import json
 import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -132,6 +134,40 @@ class TestProbeRefusals(unittest.TestCase):
         result = self._probe(metadata(duration=42, id="dQw4w9WgXcQ"))
         self.assertEqual(result["duration_s"], 42)
         self.assertEqual(result["video_id"], "dQw4w9WgXcQ")
+        self.assertIsNone(result["info_json"])
+
+    def test_the_metadata_is_kept_in_the_workdir_for_the_download(self):
+        workdir = tempfile.mkdtemp()
+        try:
+            info = metadata(duration=42)
+            with mock.patch.object(pipeline, "_run", return_value=(0, info, "")) as run:
+                result = pipeline.probe(
+                    "https://youtu.be/x", a_config(), pipeline.Deadline(60),
+                    workdir=workdir,
+                )
+            path = os.path.join(workdir, "info.json")
+            self.assertEqual(result["info_json"], path)
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), info)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(run.call_args[1]["cwd"], workdir)
+        finally:
+            shutil.rmtree(workdir)
+
+    def test_a_refused_video_keeps_no_metadata(self):
+        workdir = tempfile.mkdtemp()
+        try:
+            with mock.patch.object(
+                pipeline, "_run", return_value=(0, metadata(duration=7200), "")
+            ):
+                with self.assertRaises(pipeline.PipelineError):
+                    pipeline.probe(
+                        "https://youtu.be/x", a_config(max_duration_s=3600),
+                        pipeline.Deadline(60), workdir=workdir,
+                    )
+            self.assertEqual(os.listdir(workdir), [])
+        finally:
+            shutil.rmtree(workdir)
 
 
 class TestArgv(unittest.TestCase):
@@ -193,7 +229,7 @@ class TestArgv(unittest.TestCase):
         self.assertIn("--ignore-config", self._argv_of(run.call_args))
         with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
                 mock.patch.object(os, "listdir", return_value=["audio.webm"]):
-            pipeline.download_audio("https://youtu.be/x", "/w", pipeline.Deadline(60))
+            pipeline.download_audio("/w/info.json", "/w", pipeline.Deadline(60))
         self.assertIn("--ignore-config", self._argv_of(run.call_args))
 
     def test_the_generic_extractor_is_off(self):
@@ -205,18 +241,29 @@ class TestArgv(unittest.TestCase):
         self._assert_generic_is_off(self._argv_of(run.call_args))
         with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
                 mock.patch.object(os, "listdir", return_value=["audio.webm"]):
-            pipeline.download_audio("https://youtu.be/x", "/w", pipeline.Deadline(60))
+            pipeline.download_audio("/w/info.json", "/w", pipeline.Deadline(60))
         self._assert_generic_is_off(self._argv_of(run.call_args))
 
     def _assert_generic_is_off(self, argv):
         index = argv.index("--use-extractors")
         self.assertEqual(argv[index + 1], "default,-generic")
-        self.assertLess(index, argv.index("--"))
+        if "--" in argv:
+            self.assertLess(index, argv.index("--"))
+
+    def test_download_reads_the_probe_metadata_not_the_url(self):
+        """One extraction per request: the download does not get the URL (#4)."""
+        with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
+                mock.patch.object(os, "listdir", return_value=["audio.webm"]):
+            pipeline.download_audio("/w/info.json", "/w", pipeline.Deadline(60))
+        argv = self._argv_of(run.call_args)
+        self.assertEqual(argv[argv.index("--load-info-json") + 1], "/w/info.json")
+        self.assertNotIn("--", argv)
+        self.assertFalse(any(a.startswith("http") for a in argv))
 
     def test_download_bounds_the_bytes_as_well_as_the_time(self):
         with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
                 mock.patch.object(os, "listdir", return_value=["audio.webm"]):
-            pipeline.download_audio("https://youtu.be/x", "/w", pipeline.Deadline(60))
+            pipeline.download_audio("/w/info.json", "/w", pipeline.Deadline(60))
         argv = self._argv_of(run.call_args)
         self.assertIn("--max-filesize", argv)
         self.assertIn("-f", argv)
@@ -331,7 +378,8 @@ class TestCleanup(unittest.TestCase):
 
         with mock.patch.object(pipeline.tempfile, "mkdtemp", spy_mkdtemp), \
                 mock.patch.object(pipeline, "probe", return_value={
-                    "duration_s": 10, "video_id": "dQw4w9WgXcQ", "title": "t"}), \
+                    "duration_s": 10, "video_id": "dQw4w9WgXcQ", "title": "t",
+                    "info_json": "/w/info.json"}), \
                 mock.patch.object(
                     pipeline, "download_audio",
                     side_effect=download_side_effect,
@@ -369,6 +417,43 @@ class TestCleanup(unittest.TestCase):
             set(result),
             {"text", "segments", "language", "video_id", "duration_s", "elapsed_s"},
         )
+
+    def test_the_probe_and_the_download_share_one_extraction(self):
+        seen = {}
+
+        def fake_probe(url, cfg, deadline, workdir=None):
+            seen["probe_workdir"] = workdir
+            return {"duration_s": 10, "video_id": "v", "title": "t",
+                    "info_json": os.path.join(workdir, "info.json")}
+
+        def fake_download(info_json, workdir, deadline):
+            seen["download"] = (info_json, workdir)
+            return os.path.join(workdir, "audio.webm")
+
+        with mock.patch.object(pipeline, "probe", fake_probe), \
+                mock.patch.object(pipeline, "download_audio", fake_download), \
+                mock.patch.object(pipeline, "to_wav", return_value="/w/audio.wav"), \
+                mock.patch.object(pipeline, "transcribe", return_value={
+                    "text": "hi", "segments": [], "language": "en"}):
+            pipeline.run("https://www.youtube.com/watch?v=dQw4w9WgXcQ", a_config())
+        workdir = seen["probe_workdir"]
+        self.assertIsNotNone(workdir)
+        self.assertEqual(seen["download"], (os.path.join(workdir, "info.json"), workdir))
+        self.assertFalse(os.path.exists(workdir))
+
+    def test_removed_after_a_failed_probe(self):
+        created = {}
+        real_mkdtemp = pipeline.tempfile.mkdtemp
+
+        def spy_mkdtemp(*a, **k):
+            created["path"] = real_mkdtemp(*a, **k)
+            return created["path"]
+
+        with mock.patch.object(pipeline.tempfile, "mkdtemp", spy_mkdtemp), \
+                mock.patch.object(pipeline, "_run", return_value=(1, "", "ERROR: x")):
+            with self.assertRaises(pipeline.PipelineError):
+                pipeline.run("https://www.youtube.com/watch?v=dQw4w9WgXcQ", a_config())
+        self.assertFalse(os.path.exists(created["path"]))
 
 
 if __name__ == "__main__":

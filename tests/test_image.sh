@@ -65,6 +65,13 @@ check_in_image() {
 
 check_in_image "yt-dlp runs and reports its pinned version" \
     "/usr/bin/python3 /opt/yt-dlp/bin/yt-dlp --version | grep -q 2026.08.19"
+check_in_image "deno runs and reports its pinned version" \
+    "DENO_NO_UPDATE_CHECK=1 /opt/deno/bin/deno --version | grep -q '^deno 2.9.7 '"
+# yt-dlp prints the JavaScript runtimes it found in its verbose header, before it
+# asks for a URL. The same two options as service/pipeline.py.
+check_in_image "yt-dlp finds the pinned deno as its JavaScript runtime" \
+    "/usr/bin/python3 /opt/yt-dlp/bin/yt-dlp -v --ignore-config --no-js-runtimes \
+        --js-runtimes deno:/opt/deno/bin/deno 2>&1 | grep -q 'JS runtimes: deno-2.9.7'"
 check_in_image "ffmpeg runs" \
     "/opt/ffmpeg/bin/ffmpeg -version"
 # Asserted against ffmpeg's own protocol list rather than by watching a fetch fail:
@@ -88,7 +95,8 @@ check_in_image "every artifact is readable by the unprivileged service user" \
         head -c 4 /opt/whisper/models/ggml-base.bin > /dev/null \
         && /opt/whisper/bin/whisper-cli --version > /dev/null 2>&1 \
         && /opt/ffmpeg/bin/ffmpeg -version > /dev/null \
-        && /usr/bin/python3 /opt/yt-dlp/bin/yt-dlp --version > /dev/null'"
+        && /usr/bin/python3 /opt/yt-dlp/bin/yt-dlp --version > /dev/null \
+        && DENO_DIR=/tmp/deno-test DENO_NO_UPDATE_CHECK=1 /opt/deno/bin/deno --version > /dev/null'"
 check_in_image "python3 is the pinned 3.11" \
     "/usr/bin/python3 --version | grep -q 3.11"
 check_in_image "setpriv is available for the entrypoint to drop privileges" \

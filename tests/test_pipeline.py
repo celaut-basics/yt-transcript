@@ -250,6 +250,25 @@ class TestArgv(unittest.TestCase):
         if "--" in argv:
             self.assertLess(index, argv.index("--"))
 
+    def test_both_yt_dlp_calls_use_only_the_pinned_deno(self):
+        """The challenge script runs in the image's Deno and in no other runtime (#3)."""
+        with mock.patch.object(
+            pipeline, "_run", return_value=(0, metadata(), "")
+        ) as run:
+            pipeline.probe("https://youtu.be/x", a_config(), pipeline.Deadline(60))
+        self._assert_only_deno(self._argv_of(run.call_args))
+        with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
+                mock.patch.object(os, "listdir", return_value=["audio.webm"]):
+            pipeline.download_audio("/w/info.json", "/w", pipeline.Deadline(60))
+        self._assert_only_deno(self._argv_of(run.call_args))
+
+    def _assert_only_deno(self, argv):
+        clear = argv.index("--no-js-runtimes")
+        enable = argv.index("--js-runtimes")
+        self.assertLess(clear, enable)
+        self.assertEqual(argv[enable + 1], "deno:" + config.DENO_BIN)
+        self.assertEqual(argv.count("--js-runtimes"), 1)
+
     def test_download_reads_the_probe_metadata_not_the_url(self):
         """One extraction per request: the download does not get the URL (#4)."""
         with mock.patch.object(pipeline, "_run", return_value=(0, "", "")) as run, \
@@ -321,7 +340,11 @@ class TestSubprocessEnvironment(unittest.TestCase):
         env = run.call_args[1]["env"]
         self.assertNotIn("http_proxy", env)
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", env)
-        self.assertEqual(set(env) - {"PATH", "HOME", "LC_ALL", "LANG", "XDG_CACHE_HOME"}, set())
+        self.assertEqual(
+            set(env) - {"PATH", "HOME", "LC_ALL", "LANG", "XDG_CACHE_HOME", "DENO_NO_UPDATE_CHECK"},
+            set(),
+        )
+        self.assertEqual(env["DENO_NO_UPDATE_CHECK"], "1")
 
     def test_no_shell_is_ever_used(self):
         with mock.patch.object(pipeline.subprocess, "run") as run:

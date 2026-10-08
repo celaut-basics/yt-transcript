@@ -92,6 +92,8 @@ def _run(
         # yt-dlp writes a cache; point it inside the request's own directory so it
         # goes when the directory does, rather than accumulating in $HOME.
         "XDG_CACHE_HOME": os.path.join(cwd, ".cache") if cwd else "/tmp/.cache",
+        # Deno, run by yt-dlp, does not ask the internet for a newer Deno.
+        "DENO_NO_UPDATE_CHECK": "1",
     }
     try:
         completed = subprocess.run(
@@ -146,6 +148,10 @@ _YTDLP_COMMON = (
     # nowhere by default now, so the flag bought nothing and cost a warning.
     "--no-cookies",               # and nothing reads a cookie file: see README
     "--no-cookies-from-browser",
+    # The one JavaScript runtime, by its path in the image, for YouTube's challenge
+    # script. `--no-js-runtimes` first, so no other runtime on PATH is used.
+    "--no-js-runtimes",
+    "--js-runtimes", f"deno:{config.DENO_BIN}",
     "--socket-timeout", "30",
     "--retries", "2",
 )

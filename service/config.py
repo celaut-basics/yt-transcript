@@ -145,6 +145,8 @@ MODEL_PATH = "/opt/whisper/models/ggml-base.bin"
 WHISPER_BIN = "/opt/whisper/bin/whisper-cli"
 FFMPEG_BIN = "/opt/ffmpeg/bin/ffmpeg"
 YTDLP_BIN = "/opt/yt-dlp/bin/yt-dlp"
+# The JavaScript runtime that yt-dlp runs YouTube's challenge script in.
+DENO_BIN = "/opt/deno/bin/deno"
 
 
 def load(

@@ -260,7 +260,8 @@ RUN apt-get -o Acquire::Retries=5 update \
 # release rather than tracking: a downloader that updates itself is a downloader whose
 # behaviour is not the behaviour this spec was reviewed with. That has a cost, stated
 # in the README: YouTube changes its extraction surface often, and a pinned yt-dlp
-# eventually stops working and needs this line bumped.
+# eventually stops working and needs this line bumped. 2026.08.19 is the latest
+# release on 2026-10-08, checked when Deno was added below.
 ARG YTDLP_VERSION=2026.08.19
 ARG YTDLP_SHA256=1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6
 ADD https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp /opt/yt-dlp/bin/yt-dlp
@@ -268,6 +269,30 @@ ADD https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp /
 # and this file has to be readable and executable by the unprivileged service user.
 RUN echo "${YTDLP_SHA256}  /opt/yt-dlp/bin/yt-dlp" | sha256sum -c - \
     && chmod 0755 /opt/yt-dlp/bin/yt-dlp
+
+# ------------------------------------------------------------------------------ deno
+# The JavaScript runtime that yt-dlp uses to solve YouTube's challenge script. Without
+# one, yt-dlp says that YouTube extraction is deprecated and that some formats can be
+# missing. Deno is the runtime that yt-dlp recommends and enables by default. yt-dlp
+# runs the challenge script in it with no permissions (no file, network or env
+# access). The solver script itself (yt-dlp-ejs) is in the yt-dlp zipapp above, so
+# nothing is fetched at run time. service/pipeline.py names this binary with
+# `--js-runtimes`.
+#
+# The release zip, pinned by the SHA-256 that Deno publishes next to it
+# (`<asset>.sha256sum`), for aarch64:
+#
+#   curl -sL https://github.com/denoland/deno/releases/download/v2.9.7/deno-aarch64-unknown-linux-gnu.zip.sha256sum
+#
+# The zip holds one file, `deno`. The runtime stage has no `unzip`, so Python's own
+# zipfile module extracts it. The image grows by about 100 MB.
+ARG DENO_VERSION=2.9.7
+ARG DENO_SHA256=c832298b1ad4422481334855f6003e0f54145762c5a134f20a489511d2f65bbf
+ADD https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-aarch64-unknown-linux-gnu.zip /tmp/deno.zip
+RUN echo "${DENO_SHA256}  /tmp/deno.zip" | sha256sum -c - \
+    && /usr/bin/python3 -m zipfile -e /tmp/deno.zip /opt/deno/bin/ \
+    && chmod 0755 /opt/deno/bin/deno \
+    && rm /tmp/deno.zip
 
 COPY --from=ffmpeg  /opt/ffmpeg/bin/ffmpeg          /opt/ffmpeg/bin/ffmpeg
 COPY --from=whisper /opt/whisper/bin/whisper-cli    /opt/whisper/bin/whisper-cli
@@ -297,6 +322,7 @@ RUN set -eu; \
     /opt/ffmpeg/bin/ffmpeg -version > /dev/null; \
     /opt/whisper/bin/whisper-cli --version > /dev/null 2>&1; \
     /usr/bin/python3 /opt/yt-dlp/bin/yt-dlp --version > /dev/null; \
+    DENO_NO_UPDATE_CHECK=1 /opt/deno/bin/deno --version > /dev/null; \
     /usr/bin/python3 --version > /dev/null; \
     test -s /opt/whisper/models/ggml-base.bin; \
     command -v setpriv > /dev/null; \
@@ -306,5 +332,7 @@ RUN set -eu; \
         head -c 4 /opt/whisper/models/ggml-base.bin > /dev/null \
         && /opt/ffmpeg/bin/ffmpeg -version > /dev/null \
         && /opt/whisper/bin/whisper-cli --version > /dev/null 2>&1 \
-        && /usr/bin/python3 /opt/yt-dlp/bin/yt-dlp --version > /dev/null'; \
+        && /usr/bin/python3 /opt/yt-dlp/bin/yt-dlp --version > /dev/null \
+        && DENO_DIR=/tmp/deno-smoke DENO_NO_UPDATE_CHECK=1 /opt/deno/bin/deno --version > /dev/null'; \
+    rm -rf /tmp/deno-smoke; \
     echo 'smoke test: binaries run, model readable by the service user, modules import'

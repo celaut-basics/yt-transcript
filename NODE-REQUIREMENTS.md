@@ -85,6 +85,10 @@ nothing, so the Docker resolver stays.
 answers for its siblings, which the `network.py` note proposes. It does not exist
 yet. When it does, a narrower declaration can become possible.
 
+**Decision** (maintainer, 2026-10-08, #5): keep the public resolvers as the default,
+with the `YT_DNS_SERVERS` override, until the node has that DNS service. Then the
+service uses the node's DNS service in place of the public resolvers.
+
 ## 3. Facts from the first version of this file that changed in nodo
 
 The first version of this file reported two more problems. Current nodo has resolved

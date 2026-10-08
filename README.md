@@ -137,6 +137,14 @@ image has no usable one. So the entrypoint writes one before it drops privileges
 (`service/resolver.py`): public resolvers by default, or the addresses in
 `YT_DNS_SERVERS`. Outside a node (Docker) it keeps the resolver of the runtime.
 
+This default is the DNS policy of celaut-basics (maintainer decision, 2026-10-08, #5).
+A service that needs names uses public resolvers by default, and the operator can
+replace them with `YT_DNS_SERVERS`. The DNS queries then go to those third parties. A
+DNS service of the node is to replace this later: a sibling that answers for
+`network_resolution` on port 53, as nodo `docs/NETWORKS.md` describes. It is not
+implemented yet. A service that does not need names writes no resolver
+(`celaut-basics/bitcoin-node`).
+
 **The service limits the egress, not the node:**
 
 - yt-dlp is the only program in this image that opens a socket.
@@ -442,12 +450,16 @@ downloader that updates itself is one whose behaviour is not what the spec was
 reviewed with. The cost is that this line needs bumping periodically, and the symptom
 will be `502` with yt-dlp's own message in `detail`.
 
-**yt-dlp may need a JavaScript runtime for YouTube.** Recent yt-dlp releases warn
-that YouTube extraction without an external JavaScript runtime (for example Deno) is
-deprecated, and that some formats can then be missing. This image has no JavaScript
-runtime. The live run above found an audio format with the pinned release. If a later
-release needs one, the symptom is `502` with "Requested format is not available" in
-`detail`. The fix is a pinned Deno binary in the runtime stage.
+**yt-dlp uses a pinned Deno for YouTube's challenge script** (#3). Recent yt-dlp
+releases say that YouTube extraction without an external JavaScript runtime is
+deprecated, and that some formats can then be missing. The runtime stage has Deno
+`2.9.7` at `/opt/deno/bin/deno`, pinned by the SHA-256 that Deno publishes for each
+release zip. `service/pipeline.py` gives yt-dlp `--no-js-runtimes --js-runtimes
+deno:/opt/deno/bin/deno`, so yt-dlp uses this binary and no other runtime. yt-dlp runs
+the script in Deno with no permissions. The solver script (yt-dlp-ejs) is in the yt-dlp
+zipapp, so nothing is fetched at run time. Deno makes the image about 100 MB larger.
+To update it, change `DENO_VERSION` and `DENO_SHA256` in both Dockerfiles, and run the
+live test.
 
 **yt-dlp is frequently rate-limited or blocked from datacenter IPs.** A node running
 this in a cloud may see failures that a workstation does not. The live test is opt-in

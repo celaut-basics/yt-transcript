@@ -401,14 +401,17 @@ This branch did not rebuild the image and did not repeat the live transcription.
 - **A packer-shaped build works.** nodo's `COPY`-rewrite was applied and the image
   rebuilt from a simulated `.service/` context; it produced a working service.
 
-What is **not** verified: **this has never been launched under a real nodo.** No
-service id has been produced from this tree, and nothing has been through
-`resolve_network` or the firewall for real. The `service.json`, the pack tree and the
-DNS step were checked against the nodo `dev` source (`docs/PACKING.md`,
-`src/packers/`, `bash/build_ch_initramfs.sh`, `src/virtualizers/microvm/`), and
-`tests/test_layout.py` checks the packer rules, but static reading is not a launch. Also unverified: any
-architecture other than arm64, any model other than `base`, and long videos — the
-longest transcribed was 55 seconds.
+**On a real nodo** (x86_64 with KVM, cloud-hypervisor), the `amd64` tree packed,
+started and transcribed:
+
+- `v1` (`8a2a84`, nodo `dev` @ `f14a1447`, 2026-10-06): `jNQXAC9IVRw` (19 s) in 21.2 s.
+- `v2` (`4e9f73`, nodo `dev` @ `922f796e`, 2026-10-08): `jNQXAC9IVRw` in 23.7 s and
+  `ps3kWOQRQnY` (55 s) in 34.6 s, with two guest CPUs. The same calls passed after a
+  clean-registry import of the release asset.
+
+The release notes give the details. What is **not** verified: the `arm64` tree on an
+arm64 node with KVM (under QEMU/TCG on x86_64 its transcription did not finish), any
+model other than `base`, and long videos. The longest transcribed was 55 seconds.
 
 ## What is deliberately not here
 

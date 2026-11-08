@@ -416,6 +416,10 @@ started and transcribed:
 - `v2` (`4e9f73`, nodo `dev` @ `922f796e`, 2026-10-08): `jNQXAC9IVRw` in 23.7 s and
   `ps3kWOQRQnY` (55 s) in 34.6 s, with two guest CPUs. The same calls passed after a
   clean-registry import of the release asset.
+- `v4` (`685b75`, nodo `dev` @ `a97148dd`, 2026-11-08): re-packed with no code change
+  (the packer now embeds the `envs`, so the id changed). After a clean-registry import
+  of the release asset, `jNQXAC9IVRw` in 21 s and a non-YouTube host refused with 400.
+  `v3` passes the same calls on that node.
 
 The release notes give the details. What is **not** verified: the `arm64` tree on an
 arm64 node with KVM (under QEMU/TCG on x86_64 its transcription did not finish), any
